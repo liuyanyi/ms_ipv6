@@ -1,0 +1,101 @@
+{
+  "repo_id": "Qwen/Qwen3-4B-Thinking-2507",
+  "repo_type": "model",
+  "endpoint": "https://www.modelscope.cn",
+  "revision": "master",
+  "file_count": 13,
+  "files": [
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=config.json",
+      "path": "config.json",
+      "remote_path": "config.json",
+      "size": 727,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/5b/ee/a1a4a34c62782bfb2f911c606741a3bab8f92d80a118fa053c28af12e8ba?filename=config.json&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816509-5300086e8cda436891273aa66f76e32d-0-4c9c3211eacd971e0ffab95409a44c35"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=configuration.json",
+      "path": "configuration.json",
+      "remote_path": "configuration.json",
+      "size": 73,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/f8/88/421726665e8a84b738eed42a64875aed79de8be7daade851ac8bf4c0cef9?filename=configuration.json&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816510-7edb8bc727ea446d86adcedf2ccd7eaf-0-ac1184249b5fea063fa1946beb1418c8"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=generation_config.json",
+      "path": "generation_config.json",
+      "remote_path": "generation_config.json",
+      "size": 239,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/23/25/da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2?filename=generation_config.json&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816510-a1bc6ada6bf44c29b1a6dc19aebf2ab2-0-a2074d7f9205aef8ce78eec4fbee55a4"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=LICENSE",
+      "path": "LICENSE",
+      "remote_path": "LICENSE",
+      "size": 11343,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/83/2d/d9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e?filename=LICENSE&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816510-5434b219b8a64a5f947c53d34f506d48-0-580c678aa48e94be9441b0a8c3617de9"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=merges.txt",
+      "path": "merges.txt",
+      "remote_path": "merges.txt",
+      "size": 1671839,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/59/9b/ab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3?filename=merges.txt&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816510-f3a77ad5765848bf8875a00388ca2d63-0-db5beb3304f264039d694099c6d970cf"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=model-00001-of-00003.safetensors",
+      "path": "model-00001-of-00003.safetensors",
+      "remote_path": "model-00001-of-00003.safetensors",
+      "size": 3957900840,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/98/17/8c1cddbca8ad76102afdbf76e4df79b64b82377ad4dca34c755cac00571a?filename=model-00001-of-00003.safetensors&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816511-38a81b0e0bc149958d519bb780dd1ccb-0-eb56edbef8cd9016a73b40baff19dde3"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=model-00002-of-00003.safetensors",
+      "path": "model-00002-of-00003.safetensors",
+      "remote_path": "model-00002-of-00003.safetensors",
+      "size": 3987450520,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/57/b5/bd1f667d420350f169342a90b50e5ffc2aa202ba1819da1af3367ff2261f?filename=model-00002-of-00003.safetensors&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816511-911be6c3830440258ddc92eda857c45c-0-0f984d17383e98aaf47a26931d806338"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=model-00003-of-00003.safetensors",
+      "path": "model-00003-of-00003.safetensors",
+      "remote_path": "model-00003-of-00003.safetensors",
+      "size": 99630640,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/e3/cc/cb84e8926f3f18c334465639939a68af310b0729938fccc2de66a9a31953?filename=model-00003-of-00003.safetensors&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816512-12d70716372b4c379e64e13affbbbf10-0-f4690dcc883d96221829f33a203d5962"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=model.safetensors.index.json",
+      "path": "model.safetensors.index.json",
+      "remote_path": "model.safetensors.index.json",
+      "size": 32819,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/d6/c4/2883a895dfef5b0080ed2116a1bcd764f558406b98923d675978a1abf29c?filename=model.safetensors.index.json&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816512-2dfa409cbd9c4b70807a2542305baa49-0-f3f2d931bb0501e46d9ffb7d84172bde"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=README.md",
+      "path": "README.md",
+      "remote_path": "README.md",
+      "size": 10063
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=tokenizer.json",
+      "path": "tokenizer.json",
+      "remote_path": "tokenizer.json",
+      "size": 11422654,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/ae/b1/3307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4?filename=tokenizer.json&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816513-809762cd63af4bb3850f3be165ed7b4e-0-4d67d7a3cc08cb054933f549c4bab979"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=tokenizer_config.json",
+      "path": "tokenizer_config.json",
+      "remote_path": "tokenizer_config.json",
+      "size": 10834,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/60/ad/cfc35f5f251e19a196ec977b4ca0fcfb534852911b3196d68d5e3b146aa0?filename=tokenizer_config.json&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816513-80e4f50fefe34a74a561cec339bc4fc4-0-5bca322c58d56f71ca548127f21a0fdf"
+    },
+    {
+      "url": "https://www.modelscope.cn/api/v1/models/Qwen/Qwen3-4B-Thinking-2507/repo?Revision=master&FilePath=vocab.json",
+      "path": "vocab.json",
+      "remote_path": "vocab.json",
+      "size": 2776833,
+      "raw_url": "https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/ca/10/d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910?filename=vocab.json&namespace=Qwen&repository=Qwen3-4B-Thinking-2507&revision=master&tag=model&auth_key=1754816513-3d992a547c034ed2bf8ac795a1884204-0-ff90d38ebeefd257a32f503467a5e723"
+    }
+  ],
+  "created_at": "2025-08-10T09:00:11.038552+00:00",
+  "version": 1
+}
