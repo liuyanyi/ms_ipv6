@@ -74,3 +74,12 @@ Thumbs.db
 *.log
 temp/
 tmp/
+
+# Generated plan files
+model__*.json
+dataset__*.json
+*_msv6.json
+
+# Archives and test files
+*.zip
+*.tar.gz
