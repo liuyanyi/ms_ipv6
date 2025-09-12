@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 # 本地模块
 from .schema import Plan, PlanFile
+from .utils import create_ipv6_session
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,14 @@ class ModelScopeDownloader:
 
         # 确保缓存目录存在
         os.makedirs(self.cache_dir, exist_ok=True)
+
+        # 根据use_ipv6设置创建对应的会话
+        if self.use_ipv6:
+            self._session = create_ipv6_session()
+            logger.info("使用IPv6专用会话进行网络请求")
+        else:
+            self._session = requests.Session()
+            logger.debug("使用标准会话进行网络请求")
 
     def download_model(self, model_id: str, output_dir: str = ".") -> bool:
         """
@@ -223,7 +232,7 @@ class ModelScopeDownloader:
                 hasher = hashlib.sha256() if isinstance(expected_sha, str) else None
                 bytes_written = 0
 
-                with requests.get(url, stream=True, timeout=timeout) as r:
+                with self._session.get(url, stream=True, timeout=timeout) as r:
                     r.raise_for_status()
                     with open(tmp_path, "wb") as wf:
                         for chunk in r.iter_content(chunk_size=1024 * 1024):
@@ -444,7 +453,7 @@ class ModelScopeDownloader:
         def _resolve_raw_url(u: str, *, headers: Optional[Dict[str, str]] = None, cookies=None) -> Optional[str]:
             try:
                 # 允许重定向，拿最终的 URL；使用 stream 避免下载主体
-                r = requests.get(
+                r = self._session.get(
                     u,
                     allow_redirects=True,
                     stream=True,
