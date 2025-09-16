@@ -6,22 +6,19 @@ Core functionality for ModelScope downloads
 import fnmatch
 import hashlib
 import json
-import logging
 import os
+import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Dict, List, Optional, Union
 
-# 第三方库
 import requests
+from loguru import logger
 from tqdm import tqdm
 
-# 本地模块
 from .schema import Plan, PlanFile
-from .utils import create_ipv6_session
-
-logger = logging.getLogger(__name__)
+from .utils import create_ipv6_session, create_observing_session
 
 
 class ModelScopeDownloader:
@@ -37,64 +34,58 @@ class ModelScopeDownloader:
         """
         self.cache_dir = cache_dir or os.path.expanduser("~/.cache/ms_ipv6")
         self.use_ipv6 = use_ipv6
+        # 用于去重相邻的连接日志
+        self._last_conn_log: Optional[tuple] = None
 
         # 确保缓存目录存在
         os.makedirs(self.cache_dir, exist_ok=True)
 
-        # 根据use_ipv6设置创建对应的会话
-        if self.use_ipv6:
-            self._session = create_ipv6_session()
-            logger.info("使用IPv6专用会话进行网络请求")
-        else:
-            self._session = requests.Session()
-            logger.debug("使用标准会话进行网络请求")
+        # 会话改为按需在下载阶段创建：此处放置一个懒加载代理，保证属性存在但不立刻构建实际 session
+        class _LazySession:
+            def __init__(self, factory):
+                self._factory = factory
+                self._real = None
 
-    def download_model(self, model_id: str, output_dir: str = ".") -> bool:
-        """
-        下载模型
+            @property
+            def materialized(self) -> bool:
+                return self._real is not None
 
-        Args:
-            model_id: 模型ID
-            output_dir: 输出目录
+            def ensure(self):
+                if self._real is None:
+                    self._real = self._factory()
+                return self._real
 
-        Returns:
-            是否下载成功
-        """
-        logger.info(f"开始下载模型: {model_id}")
-        logger.info(f"输出目录: {output_dir}")
-        logger.info(f"缓存目录: {self.cache_dir}")
-        logger.info(f"使用IPV6: {self.use_ipv6}")
+            def __getattr__(self, name: str):
+                return getattr(self.ensure(), name)
 
-        # TODO: 实现实际的下载逻辑
-        print("ModelScope下载功能正在开发中...")
-        return False
+        def _log_family(sock, peer):
+            fam = getattr(sock, "family", None)
+            fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
+                fam, str(fam)
+            )
+            key = (fam_str, peer)
+            if self._last_conn_log == key:
+                return
+            self._last_conn_log = key
+            logger.debug("connection: family={} peer={}", fam_str, peer)
 
-    def get_model_info(self, model_id: str) -> Dict[str, Any]:
-        """
-        获取模型信息
+        def _factory():
+            if self.use_ipv6:
+                sess = create_ipv6_session(on_connect=_log_family, record_last=True)
+                logger.info("使用IPv6专用会话进行网络请求")
+            else:
+                sess = create_observing_session(
+                    on_connect=_log_family, record_last=True
+                )
+                logger.info("使用标准会话进行网络请求")
+            return sess
 
-        Args:
-            model_id: 模型ID
+        self._session = _LazySession(_factory)
 
-        Returns:
-            模型信息字典
-        """
-        logger.info(f"获取模型信息: {model_id}")
-
-        # TODO: 实现实际的模型信息获取逻辑
-        return {"model_id": model_id, "status": "功能开发中"}
-
-    def list_available_models(self) -> list:
-        """
-        列出可用模型
-
-        Returns:
-            模型列表
-        """
-        logger.info("获取可用模型列表")
-
-        # TODO: 实现实际的模型列表功能
-        return []
+    def _ensure_session(self):
+        # 若是懒加载代理，则进行实体化
+        if hasattr(self._session, "ensure"):
+            self._session.ensure()  # type: ignore[union-attr]
 
     def download_from_plan(
         self,
@@ -150,7 +141,11 @@ class ModelScopeDownloader:
         def _size_key(f: PlanFile):
             size_val = f.get("size")
             has_size = isinstance(size_val, int)
-            return (0 if has_size else 1, size_val if has_size else 0, f.get("path", ""))
+            return (
+                0 if has_size else 1,
+                size_val if has_size else 0,
+                f.get("path", ""),
+            )
 
         files = sorted(files, key=_size_key)
 
@@ -164,7 +159,9 @@ class ModelScopeDownloader:
         results: List[Dict[str, Any]] = []
 
         # 进度条设置
-        all_have_sizes = total > 0 and all(isinstance(f.get("size"), int) for f in files)
+        all_have_sizes = total > 0 and all(
+            isinstance(f.get("size"), int) for f in files
+        )
         overall_mode = "bytes" if all_have_sizes else "count"
         overall_total = (
             sum(int(f["size"]) for f in files) if overall_mode == "bytes" else total
@@ -179,6 +176,8 @@ class ModelScopeDownloader:
         lock = Lock()
 
         def _download_one(item: PlanFile) -> Dict[str, Any]:
+            # 确保会话已创建（仅下载阶段构建）
+            self._ensure_session()
             # 优先使用 raw_url（通常指向支持 IPv6 的 CDN 直链）
             url = item.get("raw_url") or item["url"]
             rel_path = item["path"]  # 相对路径
@@ -227,6 +226,23 @@ class ModelScopeDownloader:
                     f"开始下载: {rel_path} ({'raw' if item.get('raw_url') else 'origin'})"
                 )
 
+                # 在发起请求前输出最近一次连接族（按 URL scheme 选择适配器）
+                try:
+                    scheme = url.split(":", 1)[0].lower()
+                    adapter = self._session.adapters.get(f"{scheme}://")
+                    fam = getattr(adapter, "last_socket_family", None)
+                    peer = getattr(adapter, "last_sockaddr", None)
+                    fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
+                        fam, str(fam)
+                    )
+                    if fam is None:
+                        overall_bar.write("上次连接: 无记录")
+                    else:
+                        overall_bar.write(f"上次连接: family={fam_str}, peer={peer}")
+                except Exception:
+                    # 记录失败不影响下载
+                    pass
+
                 expected_size = item.get("size")
                 expected_sha = item.get("sha256")
                 hasher = hashlib.sha256() if isinstance(expected_sha, str) else None
@@ -269,7 +285,10 @@ class ModelScopeDownloader:
 
                 if hasher is not None:
                     got_sha = hasher.hexdigest()
-                    if isinstance(expected_sha, str) and got_sha.lower() != expected_sha.lower():
+                    if (
+                        isinstance(expected_sha, str)
+                        and got_sha.lower() != expected_sha.lower()
+                    ):
                         try:
                             if os.path.exists(tmp_path):
                                 os.remove(tmp_path)
@@ -329,10 +348,17 @@ class ModelScopeDownloader:
             "skipped": skipped,
             "failed": failed,
         }
-        logger.info("下载完成：%s", summary)
         return summary
 
-    # --- 新增：生成下载计划 ---
+    # 为测试保留的简单接口（不触发网络）
+    def get_model_info(self, model_id: str) -> Dict[str, Any]:
+        """返回简单的模型信息字典（占位实现）。"""
+        return {"model_id": model_id, "status": "功能开发中"}
+
+    def list_available_models(self) -> List[str]:
+        """返回简单的模型列表示例（占位实现）。"""
+        return []
+
     def generate_plan(
         self,
         *,
@@ -367,9 +393,7 @@ class ModelScopeDownloader:
                 REPO_TYPE_MODEL,
             )
         except Exception as e:  # noqa: BLE001
-            raise RuntimeError(
-                "需要已安装的 'modelscope' 包以生成下载计划"
-            ) from e
+            raise RuntimeError("需要已安装的 'modelscope' 包以生成下载计划") from e
 
         if repo_type not in {"model", "dataset"}:
             raise ValueError("repo_type 仅支持 'model' 或 'dataset'")
@@ -383,10 +407,16 @@ class ModelScopeDownloader:
         # 获取文件列表与修订信息
         if repo_type == "model":
             revision_detail = api.get_valid_revision_detail(
-                repo_id, revision=DEFAULT_MODEL_REVISION, cookies=cookies, endpoint=endpoint
+                repo_id,
+                revision=DEFAULT_MODEL_REVISION,
+                cookies=cookies,
+                endpoint=endpoint,
             )
             revision = revision_detail["Revision"]
-            headers = {"Snapshot": "True", "user-agent": ModelScopeConfig.get_user_agent(user_agent=None)}
+            headers = {
+                "Snapshot": "True",
+                "user-agent": ModelScopeConfig.get_user_agent(user_agent=None),
+            }
             repo_files = api.get_model_files(
                 model_id=repo_id,
                 revision=revision,
@@ -417,7 +447,9 @@ class ModelScopeDownloader:
                 page_number += 1
 
         # 归一化模式并过滤
-        def _normalize_patterns(patterns: Optional[Union[str, List[str]]]) -> Optional[List[str]]:
+        def _normalize_patterns(
+            patterns: Optional[Union[str, List[str]]],
+        ) -> Optional[List[str]]:
             if patterns is None:
                 return None
             if isinstance(patterns, str):
@@ -443,30 +475,37 @@ class ModelScopeDownloader:
             path = f.get("Path") or f.get("Name")
             if not path:
                 continue
-            if ignore_patterns and any(fnmatch.fnmatch(path, pat) for pat in ignore_patterns):
+            if ignore_patterns and any(
+                fnmatch.fnmatch(path, pat) for pat in ignore_patterns
+            ):
                 continue
-            if allow_patterns and not any(fnmatch.fnmatch(path, pat) for pat in allow_patterns):
+            if allow_patterns and not any(
+                fnmatch.fnmatch(path, pat) for pat in allow_patterns
+            ):
                 continue
             filtered_files.append(f)
 
         # 解析重定向，获得可用的 raw_url（不下载，仅做跳转探测）
-        def _resolve_raw_url(u: str, *, headers: Optional[Dict[str, str]] = None, cookies=None) -> Optional[str]:
+        def _resolve_raw_url(
+            u: str, *, headers: Optional[Dict[str, str]] = None, cookies=None
+        ) -> Optional[str]:
             try:
                 # 允许重定向，拿最终的 URL；使用 stream 避免下载主体
-                r = self._session.get(
-                    u,
-                    allow_redirects=True,
-                    stream=True,
-                    timeout=10,
-                    headers=headers,
-                    cookies=cookies,
-                )
-                try:
-                    # 存在重定向历史并且最终 URL 与原始不同，则视为直链
-                    if getattr(r, "history", None) and r.url and r.url != u:
-                        return r.url
-                finally:
-                    r.close()
+                with requests.Session() as _tmp_sess:
+                    r = _tmp_sess.get(
+                        u,
+                        allow_redirects=True,
+                        stream=True,
+                        timeout=10,
+                        headers=headers,
+                        cookies=cookies,
+                    )
+                    try:
+                        # 存在重定向历史并且最终 URL 与原始不同，则视为直链
+                        if getattr(r, "history", None) and r.url and r.url != u:
+                            return r.url
+                    finally:
+                        r.close()
             except Exception:
                 return None
             return None
@@ -501,7 +540,9 @@ class ModelScopeDownloader:
                 )
             rel_path = os.path.normpath(remote_path)
             # 传入 headers/cookies 以获得与 API 一致的跳转行为
-            raw = _resolve_raw_url(url, headers=headers if repo_type == "model" else None, cookies=cookies)
+            raw = _resolve_raw_url(
+                url, headers=headers if repo_type == "model" else None, cookies=cookies
+            )
             entry: PlanFile = {
                 "url": url,
                 "path": rel_path,
@@ -539,5 +580,5 @@ class ModelScopeDownloader:
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan, f, ensure_ascii=False, indent=2)
 
-        logger.info("下载计划已生成: %s (共 %d 个文件)", plan_path, len(plan_files))
+    # 这里不再输出 info 日志，避免与 CLI 的 print 重复
         return plan_path

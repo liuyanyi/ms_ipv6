@@ -82,8 +82,12 @@ ms-ipv6 download --plan my_plan.json --local-dir ./downloads/ --timeout 120
 ### 全局选项
 
 ```bash
-# 启用详细日志
+# 启用详细/调试日志（默认关闭）
 ms-ipv6 --verbose plan --repo-id user/model
+ms-ipv6 --debug download --plan my_plan.json --local-dir ./downloads/
+
+# 关闭调试日志（若已通过默认或脚本开启）
+ms-ipv6 --no-debug download --plan my_plan.json --local-dir ./downloads/
 
 # 强制使用 IPV6
 ms-ipv6 --ipv6 download --plan my_plan.json --local-dir ./downloads/
@@ -122,6 +126,9 @@ ms-ipv6 download --plan model__user__model.json --local-dir ./weights/
 # 启用 IPV6 模式并只下载支持直链的文件
 ms-ipv6 --ipv6 plan --repo-id user/model
 ms-ipv6 --ipv6 download --plan model__user__model.json --local-dir ./downloads/ --only-raw
+
+# 提示：打开调试日志可看到每次连接的地址族（IPv4/IPv6）以及对端地址
+ms-ipv6 --debug --ipv6 download --plan model__user__model.json --local-dir ./downloads/ --only-raw
 ```
 
 ### 场景 4：批量处理
