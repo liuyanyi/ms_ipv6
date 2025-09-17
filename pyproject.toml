@@ -36,6 +36,9 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=0.900",
 ]
+plan = [
+    "modelscope>=1.16.0",
+]
 
 [project.scripts]
 ms-ipv6 = "ms_ipv6.cli:main"

@@ -202,7 +202,7 @@ class ModelScopeDownloader:
                             with lock:
                                 overall_bar.update(size_delta)
                     # 显示当前文件
-                    overall_bar.write(f"跳过: {rel_path} (已存在)")
+                    logger.info("跳过: {} (已存在)", rel_path)
                     return {"path": rel_path, "status": "skipped"}
 
             # 当前文件进度条（仅顺序下载时展示）
@@ -222,8 +222,10 @@ class ModelScopeDownloader:
                     )
 
                 # 提示开始下载的文件（并发/顺序均可见）
-                overall_bar.write(
-                    f"开始下载: {rel_path} ({'raw' if item.get('raw_url') else 'origin'})"
+                logger.info(
+                    "开始下载: {} ({})",
+                    rel_path,
+                    "raw" if item.get("raw_url") else "origin",
                 )
 
                 # 在发起请求前输出最近一次连接族（按 URL scheme 选择适配器）
@@ -236,9 +238,9 @@ class ModelScopeDownloader:
                         fam, str(fam)
                     )
                     if fam is None:
-                        overall_bar.write("上次连接: 无记录")
+                        logger.debug("上次连接: 无记录")
                     else:
-                        overall_bar.write(f"上次连接: family={fam_str}, peer={peer}")
+                        logger.debug("上次连接: family={} peer={}", fam_str, peer)
                 except Exception:
                     # 记录失败不影响下载
                     pass
@@ -278,7 +280,7 @@ class ModelScopeDownloader:
                                     os.remove(tmp_path)
                             except Exception:
                                 pass
-                            overall_bar.write(f"大小校验失败: {rel_path}")
+                            logger.error("大小校验失败: {}", rel_path)
                             return {"path": rel_path, "status": "size-mismatch"}
                     except Exception:  # noqa: BLE001
                         pass
@@ -294,7 +296,7 @@ class ModelScopeDownloader:
                                 os.remove(tmp_path)
                         except Exception:
                             pass
-                        overall_bar.write(f"校验失败(sha256): {rel_path}")
+                        logger.error("校验失败(sha256): {}", rel_path)
                         return {"path": rel_path, "status": "hash-mismatch"}
 
                 os.replace(tmp_path, target)
@@ -307,7 +309,7 @@ class ModelScopeDownloader:
                         with lock:
                             overall_bar.update(1)
                 # 提示完成
-                overall_bar.write(f"完成: {rel_path}")
+                logger.success("完成: {}", rel_path)
                 return {"path": rel_path, "status": "ok"}
             except Exception as e:  # noqa: BLE001
                 # 清理临时文件
@@ -316,7 +318,7 @@ class ModelScopeDownloader:
                         os.remove(tmp_path)
                 except Exception:  # noqa: BLE001
                     pass
-                overall_bar.write(f"失败: {rel_path} -> {e}")
+                logger.error("失败: {} -> {}", rel_path, e)
                 return {"path": rel_path, "status": "error", "error": str(e)}
             finally:
                 if file_bar is not None:
@@ -365,6 +367,7 @@ class ModelScopeDownloader:
         repo_type: str,
         repo_id: str,
         output: Optional[str] = None,
+        token: Optional[str] = None,
         allow_pattern: Optional[Union[str, List[str]]] = None,
         ignore_pattern: Optional[Union[str, List[str]]] = None,
     ) -> str:
@@ -376,12 +379,16 @@ class ModelScopeDownloader:
             repo_id: 仓库ID，如 "user/repo"
             output: 计划文件输出路径（.json）。若未提供，默认输出到
                     repo_type__<repo_id>（将 repo_id 中的 '/' 替换为 '__'）.json。
+            token: 可选的 ModelScope API Token（未提供时将从环境变量 MODELSCOPE_API_TOKEN 读取）。当前参数暂不参与实际逻辑。
             allow_pattern: 允许下载的通配模式（可多值）
             ignore_pattern: 忽略下载的通配模式（可多值）
 
         Returns:
             计划文件路径（最终写入的位置）
         """
+        # 允许从环境变量读取 token，但当前不使用（为后续私有仓库等能力预留）
+        if token is None:
+            token = os.getenv("MODELSCOPE_API_TOKEN")
         # 惰性导入，避免在未安装modelscope时出错
         try:
             from modelscope.hub.api import HubApi, ModelScopeConfig
@@ -401,6 +408,7 @@ class ModelScopeDownloader:
         ms_repo_type = REPO_TYPE_MODEL if repo_type == "model" else REPO_TYPE_DATASET
 
         api = HubApi()
+        api.login(access_token=token)
         endpoint = api.get_endpoint_for_read(repo_id=repo_id, repo_type=ms_repo_type)
         cookies = ModelScopeConfig.get_cookies()
 

@@ -16,31 +16,45 @@ from requests.adapters import HTTPAdapter
 # from urllib3.util.connection import create_connection  # no longer used
 
 
-def setup_logging(verbose: bool = False) -> None:
+def setup_logging(verbose: bool = False, *, use_tqdm: bool = False) -> None:
     """配置 loguru 日志
 
     Args:
         verbose: 是否启用详细日志
     """
     logger.remove()
-    logger.add(
-        sys.stdout,
-        # format="<level>{level}</level>: "  # 等级
-        # "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # 颜色>时间
-        # # "{process.name} | "  # 进程名
-        # # "{thread.name} | "  # 进程名
-        # "<cyan>{file}:{line}</cyan> | "  # 文件名:行号
-        # # "<cyan>{function}</cyan> | "  # 方法名
-        # "<level>{message}</level>",  # 日志内容
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "  # 时间
-        "<blue>LOG</blue> "  # 日志类型
-        "<level>{level.icon}</level> | "  # 等级
-        "<cyan>{file: >10}:{line: <4}</cyan> | "  # 文件名:行号
-        "<level>{message}</level>",  # 日志内容
-        # backtrace=True,
-        diagnose=False,
-        level="DEBUG" if verbose else "INFO",
+    log_format = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<blue>LOG</blue> "
+        "<level>{level.icon}</level> | "
+        "<cyan>{file: >10}:{line: <4}</cyan> | "
+        "<level>{message}</level>"
     )
+
+    if use_tqdm:
+        # 使用 tqdm.write 作为 sink，避免破坏进度条
+        def _tqdm_sink(message: str) -> None:
+            try:
+                from tqdm import tqdm  # 局部导入，避免非下载路径的硬依赖
+                # loguru 已带换行，这里不再追加换行
+                tqdm.write(message, end="")
+            except Exception:
+                sys.stdout.write(message)
+
+        logger.add(
+            _tqdm_sink,
+            format=log_format,
+            colorize=True,
+            diagnose=False,
+            level="DEBUG" if verbose else "INFO",
+        )
+    else:
+        logger.add(
+            sys.stdout,
+            format=log_format,
+            diagnose=False,
+            level="DEBUG" if verbose else "INFO",
+        )
 
     # 调整logger level的默认icon
     # 确保可以在控制台显示并具有相同的宽度
@@ -333,7 +347,7 @@ class ObservingHTTPAdapter(HTTPAdapter):
         if peer is None:
             peer = self.last_sockaddr
         fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(fam, str(fam))
-        logger.debug("request: url=%s family=%s peer=%s", request.url, fam_str, peer)
+        logger.debug(f"request: url={request.url} family={fam_str} peer={peer}")
         return response
 
 
