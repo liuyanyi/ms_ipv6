@@ -3,6 +3,7 @@
 These types help document and validate the structure of the generated plan
 and the plan consumed during downloads.
 """
+
 from typing import List
 
 from typing_extensions import Literal, NotRequired, TypedDict
