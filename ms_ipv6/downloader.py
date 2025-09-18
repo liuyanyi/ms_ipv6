@@ -588,5 +588,5 @@ class ModelScopeDownloader:
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan, f, ensure_ascii=False, indent=2)
 
-    # 这里不再输出 info 日志，避免与 CLI 的 print 重复
+        # 这里不再输出 info 日志，避免与 CLI 的 print 重复
         return plan_path

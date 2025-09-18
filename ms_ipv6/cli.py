@@ -16,9 +16,7 @@ def create_parser() -> argparse.ArgumentParser:
     """创建命令行参数解析器，允许全局参数置于子命令之前或之后。"""
     # 公共父解析器：仅包含通用日志选项
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument(
-        "--verbose", "-v", action="store_true", help="启用详细日志输出"
-    )
+    common.add_argument("--verbose", "-v", action="store_true", help="启用详细日志输出")
 
     # 主解析器不再包含公共参数，禁止在子命令前书写全局选项
     parser = argparse.ArgumentParser(
@@ -112,7 +110,9 @@ def main() -> None:
         logger.info(f"ms-ipv6 {__version__}")
         return
 
-    use_ipv6 = bool(getattr(args, "ipv6", False)) if args.command == "download" else False
+    use_ipv6 = (
+        bool(getattr(args, "ipv6", False)) if args.command == "download" else False
+    )
     downloader = ModelScopeDownloader(use_ipv6=use_ipv6)
 
     if args.command == "plan":

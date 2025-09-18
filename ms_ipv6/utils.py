@@ -2,7 +2,6 @@
 Utility functions for the ms_ipv6 package
 """
 
-import logging
 import os
 import socket
 import sys
@@ -36,6 +35,7 @@ def setup_logging(verbose: bool = False, *, use_tqdm: bool = False) -> None:
         def _tqdm_sink(message: str) -> None:
             try:
                 from tqdm import tqdm  # 局部导入，避免非下载路径的硬依赖
+
                 # loguru 已带换行，这里不再追加换行
                 tqdm.write(message, end="")
             except Exception:
@@ -137,7 +137,9 @@ class IPv6OnlyHTTPAdapter(HTTPAdapter):
             def _new_conn(self):  # type: ignore[override]
                 host, port = self.host, self.port
                 try:
-                    addr_info = socket.getaddrinfo(host, port, socket.AF_INET6, socket.SOCK_STREAM)
+                    addr_info = socket.getaddrinfo(
+                        host, port, socket.AF_INET6, socket.SOCK_STREAM
+                    )
                     if not addr_info:
                         raise socket.gaierror(f"No IPv6 addresses found for {host}")
                     _, _, _, _, sockaddr = addr_info[0]
@@ -145,7 +147,9 @@ class IPv6OnlyHTTPAdapter(HTTPAdapter):
                     # 直接创建 IPv6 socket 进行连接
                     sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
                     # 设置连接超时（尽量从 Timeout 对象读取 connect 超时）
-                    connect_timeout = getattr(getattr(self, "timeout", None), "connect_timeout", None)
+                    connect_timeout = getattr(
+                        getattr(self, "timeout", None), "connect_timeout", None
+                    )
                     if connect_timeout is None:
                         # 兼容纯数值或 None
                         connect_timeout = getattr(self, "timeout", None)
@@ -178,7 +182,9 @@ class IPv6OnlyHTTPAdapter(HTTPAdapter):
                             logger.debug("on_connect callback raised: %r", cb_err)
                     return sock
                 except socket.gaierror as e:
-                    raise ConnectionError(f"IPv6 connection failed for {host}: {e}") from e
+                    raise ConnectionError(
+                        f"IPv6 connection failed for {host}: {e}"
+                    ) from e
 
         class IPv6HTTPSConnection(IPv6HTTPConnection, BaseHTTPSConnection):
             # 复用 _new_conn 逻辑，TLS 包装在上层 connect 流程完成
@@ -201,7 +207,9 @@ class IPv6OnlyHTTPAdapter(HTTPAdapter):
             self.poolmanager.pool_classes_by_scheme = pool_classes_by_scheme  # type: ignore[attr-defined]
         except Exception:
             # 如果 urllib3 版本不支持该属性，则回退到默认行为（但一般 v2.x 支持）
-            logger.debug("pool_classes_by_scheme attribute not set; falling back to default pools")
+            logger.debug(
+                "pool_classes_by_scheme attribute not set; falling back to default pools"
+            )
 
     # 统一的每请求日志：在请求结束后打印 url + family + peer
     def send(self, request, **kwargs):  # type: ignore[override]
@@ -312,7 +320,9 @@ class ObservingHTTPAdapter(HTTPAdapter):
         try:
             self.poolmanager.pool_classes_by_scheme = pool_classes_by_scheme  # type: ignore[attr-defined]
         except Exception:
-            logger.debug("pool_classes_by_scheme attribute not set for ObservingHTTPAdapter")
+            logger.debug(
+                "pool_classes_by_scheme attribute not set for ObservingHTTPAdapter"
+            )
 
     # 统一的每请求日志：在请求结束后打印 url + family + peer
     def send(self, request, **kwargs):  # type: ignore[override]
