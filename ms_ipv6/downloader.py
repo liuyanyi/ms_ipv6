@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Dict, List, Optional, Union
 
-import requests
+import httpx
 from loguru import logger
 from tqdm import tqdm
 
@@ -228,12 +228,11 @@ class ModelScopeDownloader:
                     "raw" if item.get("raw_url") else "origin",
                 )
 
-                # 在发起请求前输出最近一次连接族（按 URL scheme 选择适配器）
+                # 在发起请求前输出最近一次连接族
                 try:
-                    scheme = url.split(":", 1)[0].lower()
-                    adapter = self._session.adapters.get(f"{scheme}://")
-                    fam = getattr(adapter, "last_socket_family", None)
-                    peer = getattr(adapter, "last_sockaddr", None)
+                    transport = getattr(self._session, "_transport", None)
+                    fam = getattr(transport, "last_socket_family", None)
+                    peer = getattr(transport, "last_sockaddr", None)
                     fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
                         fam, str(fam)
                     )
@@ -250,10 +249,10 @@ class ModelScopeDownloader:
                 hasher = hashlib.sha256() if isinstance(expected_sha, str) else None
                 bytes_written = 0
 
-                with self._session.get(url, stream=True, timeout=timeout) as r:
+                with self._session.stream("GET", url, timeout=timeout) as r:
                     r.raise_for_status()
                     with open(tmp_path, "wb") as wf:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        for chunk in r.iter_bytes(chunk_size=1024 * 1024):
                             if not chunk:
                                 continue
                             wf.write(chunk)
@@ -499,21 +498,17 @@ class ModelScopeDownloader:
         ) -> Optional[str]:
             try:
                 # 允许重定向，拿最终的 URL；使用 stream 避免下载主体
-                with requests.Session() as _tmp_sess:
-                    r = _tmp_sess.get(
+                with httpx.Client(follow_redirects=True) as _tmp_client:
+                    with _tmp_client.stream(
+                        "GET",
                         u,
-                        allow_redirects=True,
-                        stream=True,
                         timeout=10,
                         headers=headers,
                         cookies=cookies,
-                    )
-                    try:
+                    ) as r:
                         # 存在重定向历史并且最终 URL 与原始不同，则视为直链
-                        if getattr(r, "history", None) and r.url and r.url != u:
-                            return r.url
-                    finally:
-                        r.close()
+                        if r.history and str(r.url) != u:
+                            return str(r.url)
             except Exception:
                 return None
             return None
