@@ -97,31 +97,20 @@ def is_ipv6_available() -> bool:
         return False
 
 
-# Custom transport classes for httpx to support IPv6-only and connection observing
-# Note: httpx uses httpcore under the hood, which has a different architecture than urllib3
-# We'll implement a simpler approach using httpx's built-in features
-
-
-class _ConnectionObserver:
-    """Helper class to store connection metadata"""
-
-    def __init__(
-        self,
-        on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]] = None,
-        record_last: bool = False,
-    ):
-        self.on_connect = on_connect
-        self.record_last = record_last
-        self.last_socket_family: Optional[int] = None
-        self.last_sockaddr: Optional[Tuple[Any, ...]] = None
+# Custom transport classes for httpx
+# Note: httpx/httpcore has a different architecture than requests/urllib3
+# The original requests implementation used low-level urllib3 adapters
+# httpx is designed to be simpler and doesn't expose the same hooks
+# We maintain the interface but with simplified implementation
 
 
 class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
     """
-    强制使用IPv6连接的HTTP传输类
+    IPv6优先的HTTP传输类
 
-    注意：由于httpx的架构与requests不同，这里采用简化实现
-    主要通过socket_options和local_address来影响连接行为
+    注意：httpx的架构与requests不同，不提供相同级别的底层socket控制
+    此实现通过local_address参数提示IPv6，并存储连接回调（供接口兼容）
+    实际IPv6强制需要系统级配置或DNS解析只返回IPv6地址
     """
 
     def __init__(
@@ -134,28 +123,24 @@ class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
         """创建传输对象
 
         Args:
-            on_connect: 当底层 TCP 连接建立后触发的回调，形参为 (sock, sockaddr)
-            record_last: 是否记录最近一次连接的信息（family、sockaddr）
+            on_connect: 连接回调（httpx中无法完全实现，保留接口兼容性）
+            record_last: 是否记录连接信息（httpx中无法完全实现，保留接口兼容性）
         """
-        self._observer = _ConnectionObserver(
-            on_connect=on_connect, record_last=record_last
-        )
-        # Use local_address="::" to hint IPv6 binding
+        self._on_connect = on_connect
+        self._record_last = record_last
+        self.last_socket_family: Optional[int] = None
+        self.last_sockaddr: Optional[Tuple[Any, ...]] = None
+
+        # httpx 提示使用 IPv6：通过 local_address 参数
+        # 这不能完全保证IPv6-only，但会优先使用IPv6
         super().__init__(*args, local_address="::", **kwargs)
-
-    @property
-    def last_socket_family(self) -> Optional[int]:
-        return self._observer.last_socket_family
-
-    @property
-    def last_sockaddr(self) -> Optional[Tuple[Any, ...]]:
-        return self._observer.last_sockaddr
 
 
 class ObservingHTTPTransport(httpx.HTTPTransport):
-    """仅用于记录连接族（IPv4/IPv6）的传输类，不改变默认连接策略。
+    """HTTP传输类，存储连接观察回调（供接口兼容性）
 
-    支持 on_connect 回调与最近一次连接记录。
+    注意：httpx不提供requests/urllib3级别的连接钩子
+    此类保留接口以兼容原有代码，但回调无法在httpx中实际执行
     """
 
     def __init__(
@@ -165,18 +150,11 @@ class ObservingHTTPTransport(httpx.HTTPTransport):
         record_last: bool = False,
         **kwargs: Any,
     ) -> None:
+        self._on_connect = on_connect
+        self._record_last = record_last
+        self.last_socket_family: Optional[int] = None
+        self.last_sockaddr: Optional[Tuple[Any, ...]] = None
         super().__init__(*args, **kwargs)
-        self._observer = _ConnectionObserver(
-            on_connect=on_connect, record_last=record_last
-        )
-
-    @property
-    def last_socket_family(self) -> Optional[int]:
-        return self._observer.last_socket_family
-
-    @property
-    def last_sockaddr(self) -> Optional[Tuple[Any, ...]]:
-        return self._observer.last_sockaddr
 
 
 def create_observing_session(
@@ -184,11 +162,14 @@ def create_observing_session(
     on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]] = None,
     record_last: bool = False,
 ) -> httpx.Client:
-    """创建带连接族观察能力的 httpx 客户端，不改变寻址策略。
+    """创建 httpx 客户端（保持接口兼容性）
 
     Args:
-        on_connect: 连接建立后回调
-        record_last: 是否记录最近一次连接
+        on_connect: 连接建立后回调（httpx中无法完全实现）
+        record_last: 是否记录最近一次连接（httpx中无法完全实现）
+
+    Returns:
+        httpx.Client对象
     """
     transport = ObservingHTTPTransport(on_connect=on_connect, record_last=record_last)
     client = httpx.Client(transport=transport, follow_redirects=True)
@@ -201,10 +182,14 @@ def create_ipv6_session(
     record_last: bool = False,
 ) -> httpx.Client:
     """
-    创建仅使用IPv6的httpx客户端
+    创建IPv6优先的httpx客户端
+
+    Args:
+        on_connect: 连接建立后回调（httpx中无法完全实现）
+        record_last: 是否记录最近一次连接（httpx中无法完全实现）
 
     Returns:
-        配置为IPv6的httpx.Client对象
+        配置为IPv6优先的httpx.Client对象
     """
     transport = IPv6OnlyHTTPTransport(on_connect=on_connect, record_last=record_last)
     client = httpx.Client(transport=transport, follow_redirects=True)
