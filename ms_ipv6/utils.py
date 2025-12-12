@@ -119,7 +119,7 @@ class _ConnectionObserver:
 class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
     """
     强制使用IPv6连接的HTTP传输类
-    
+
     注意：由于httpx的架构与requests不同，这里采用简化实现
     主要通过socket_options和local_address来影响连接行为
     """
@@ -137,7 +137,9 @@ class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
             on_connect: 当底层 TCP 连接建立后触发的回调，形参为 (sock, sockaddr)
             record_last: 是否记录最近一次连接的信息（family、sockaddr）
         """
-        self._observer = _ConnectionObserver(on_connect=on_connect, record_last=record_last)
+        self._observer = _ConnectionObserver(
+            on_connect=on_connect, record_last=record_last
+        )
         # Use local_address="::" to hint IPv6 binding
         super().__init__(*args, local_address="::", **kwargs)
 
@@ -164,7 +166,9 @@ class ObservingHTTPTransport(httpx.HTTPTransport):
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self._observer = _ConnectionObserver(on_connect=on_connect, record_last=record_last)
+        self._observer = _ConnectionObserver(
+            on_connect=on_connect, record_last=record_last
+        )
 
     @property
     def last_socket_family(self) -> Optional[int]:
