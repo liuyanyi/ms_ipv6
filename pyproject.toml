@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Yanyi Liu", email = "wolfsonliu@163.com"},
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -46,9 +46,9 @@ plan = [
 ms-ipv6 = "ms_ipv6.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/ms-ipv6"
-Repository = "https://github.com/yourusername/ms-ipv6"
-Issues = "https://github.com/yourusername/ms-ipv6/issues"
+Homepage = "https://github.com/liuyanyi/ms_ipv6"
+Repository = "https://github.com/liuyanyi/ms_ipv6"
+Issues = "https://github.com/liuyanyi/ms_ipv6/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
