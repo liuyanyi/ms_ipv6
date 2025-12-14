@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
+import httpcore
 import httpx
 from loguru import logger
 
@@ -97,20 +98,99 @@ def is_ipv6_available() -> bool:
         return False
 
 
-# Custom transport classes for httpx
-# Note: httpx/httpcore has a different architecture than requests/urllib3
-# The original requests implementation used low-level urllib3 adapters
-# httpx is designed to be simpler and doesn't expose the same hooks
-# We maintain the interface but with simplified implementation
+# Custom transport classes for httpx with connection logging
+# httpx uses httpcore which provides trace extensions for monitoring connections
+
+
+class _ConnectionLoggingNetworkBackend(httpcore.NetworkBackend):
+    """网络后端包装器，用于记录连接信息"""
+
+    def __init__(
+        self,
+        backend: httpcore.NetworkBackend,
+        on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]] = None,
+        record_last: bool = False,
+        parent_transport: Any = None,
+    ):
+        self._backend = backend
+        self._on_connect = on_connect
+        self._record_last = record_last
+        self._parent_transport = parent_transport
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: Optional[float] = None,
+        local_address: Optional[str] = None,
+        socket_options: Optional[list] = None,
+    ) -> httpcore.NetworkStream:
+        """连接TCP并记录连接信息"""
+        stream = self._backend.connect_tcp(
+            host, port, timeout, local_address, socket_options
+        )
+
+        # 尝试从stream中获取socket信息
+        try:
+            # httpcore的NetworkStream包装了底层socket
+            sock = getattr(stream, "_stream", None)
+            if sock is None:
+                sock = getattr(stream, "_sock", None)
+
+            if sock is not None:
+                try:
+                    family = getattr(sock, "family", None)
+                    sockaddr = (
+                        sock.getpeername() if hasattr(sock, "getpeername") else None
+                    )
+
+                    # 记录连接信息
+                    if self._record_last and self._parent_transport is not None:
+                        self._parent_transport.last_socket_family = family
+                        self._parent_transport.last_sockaddr = sockaddr
+
+                    # 触发回调
+                    if self._on_connect is not None:
+                        try:
+                            self._on_connect(sock, sockaddr)
+                        except Exception as cb_err:
+                            logger.debug("on_connect callback raised: %r", cb_err)
+
+                    # 记录日志
+                    fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
+                        family, str(family)
+                    )
+                    logger.debug(
+                        "connection established: host={} port={} family={} peer={}",
+                        host,
+                        port,
+                        fam_str,
+                        sockaddr,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to extract socket info: %s", e)
+        except Exception as e:
+            logger.debug("Failed to log connection: %s", e)
+
+        return stream
+
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: Optional[float] = None,
+        socket_options: Optional[list] = None,
+    ) -> httpcore.NetworkStream:
+        return self._backend.connect_unix_socket(path, timeout, socket_options)
+
+    def sleep(self, seconds: float) -> None:
+        return self._backend.sleep(seconds)
 
 
 class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
     """
-    IPv6优先的HTTP传输类
+    IPv6优先的HTTP传输类，支持连接信息记录和回调
 
-    注意：httpx的架构与requests不同，不提供相同级别的底层socket控制
-    此实现通过local_address参数提示IPv6，并存储连接回调（供接口兼容）
-    实际IPv6强制需要系统级配置或DNS解析只返回IPv6地址
+    使用自定义NetworkBackend来捕获连接信息并记录日志
     """
 
     def __init__(
@@ -123,8 +203,8 @@ class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
         """创建传输对象
 
         Args:
-            on_connect: 连接回调（httpx中无法完全实现，保留接口兼容性）
-            record_last: 是否记录连接信息（httpx中无法完全实现，保留接口兼容性）
+            on_connect: 连接建立后回调
+            record_last: 是否记录连接信息
         """
         self._on_connect = on_connect
         self._record_last = record_last
@@ -132,16 +212,35 @@ class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
         self.last_sockaddr: Optional[Tuple[Any, ...]] = None
 
         # httpx 提示使用 IPv6：通过 local_address 参数
-        # 这不能完全保证IPv6-only，但会优先使用IPv6
         super().__init__(*args, local_address="::", **kwargs)
+
+        # 替换连接池以使用自定义网络后端
+        default_backend = httpcore.SyncBackend()
+        logging_backend = _ConnectionLoggingNetworkBackend(
+            default_backend,
+            on_connect=on_connect,
+            record_last=record_last,
+            parent_transport=self,
+        )
+
+        # 重新创建连接池，使用我们的logging backend
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=self._pool._ssl_context,
+            max_connections=self._pool._max_connections,
+            max_keepalive_connections=self._pool._max_keepalive_connections,
+            keepalive_expiry=self._pool._keepalive_expiry,
+            http1=self._pool._http1,
+            http2=self._pool._http2,
+            retries=self._pool._retries,
+            local_address=self._pool._local_address,
+            uds=self._pool._uds,
+            network_backend=logging_backend,
+            socket_options=self._pool._socket_options,
+        )
 
 
 class ObservingHTTPTransport(httpx.HTTPTransport):
-    """HTTP传输类，存储连接观察回调（供接口兼容性）
-
-    注意：httpx不提供requests/urllib3级别的连接钩子
-    此类保留接口以兼容原有代码，但回调无法在httpx中实际执行
-    """
+    """HTTP传输类，用于观察和记录连接信息"""
 
     def __init__(
         self,
@@ -150,11 +249,42 @@ class ObservingHTTPTransport(httpx.HTTPTransport):
         record_last: bool = False,
         **kwargs: Any,
     ) -> None:
+        """创建传输对象
+
+        Args:
+            on_connect: 连接建立后回调
+            record_last: 是否记录连接信息
+        """
         self._on_connect = on_connect
         self._record_last = record_last
         self.last_socket_family: Optional[int] = None
         self.last_sockaddr: Optional[Tuple[Any, ...]] = None
+
         super().__init__(*args, **kwargs)
+
+        # 替换连接池以使用自定义网络后端
+        default_backend = httpcore.SyncBackend()
+        logging_backend = _ConnectionLoggingNetworkBackend(
+            default_backend,
+            on_connect=on_connect,
+            record_last=record_last,
+            parent_transport=self,
+        )
+
+        # 重新创建连接池，使用我们的logging backend
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=self._pool._ssl_context,
+            max_connections=self._pool._max_connections,
+            max_keepalive_connections=self._pool._max_keepalive_connections,
+            keepalive_expiry=self._pool._keepalive_expiry,
+            http1=self._pool._http1,
+            http2=self._pool._http2,
+            retries=self._pool._retries,
+            local_address=self._pool._local_address,
+            uds=self._pool._uds,
+            network_backend=logging_backend,
+            socket_options=self._pool._socket_options,
+        )
 
 
 def create_observing_session(
@@ -162,11 +292,13 @@ def create_observing_session(
     on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]] = None,
     record_last: bool = False,
 ) -> httpx.Client:
-    """创建 httpx 客户端（保持接口兼容性）
+    """创建带连接观察能力的 httpx 客户端
+
+    在verbose模式下会记录连接的family（IPv4/IPv6）和peer地址
 
     Args:
-        on_connect: 连接建立后回调（httpx中无法完全实现）
-        record_last: 是否记录最近一次连接（httpx中无法完全实现）
+        on_connect: 连接建立后回调
+        record_last: 是否记录最近一次连接信息
 
     Returns:
         httpx.Client对象
@@ -184,9 +316,11 @@ def create_ipv6_session(
     """
     创建IPv6优先的httpx客户端
 
+    在verbose模式下会记录连接的family（IPv4/IPv6）和peer地址
+
     Args:
-        on_connect: 连接建立后回调（httpx中无法完全实现）
-        record_last: 是否记录最近一次连接（httpx中无法完全实现）
+        on_connect: 连接建立后回调
+        record_last: 是否记录最近一次连接信息
 
     Returns:
         配置为IPv6优先的httpx.Client对象
