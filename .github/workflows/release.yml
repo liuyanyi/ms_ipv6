@@ -28,7 +28,7 @@ on:
         default: ''
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   publish:
@@ -55,6 +55,19 @@ jobs:
         run: |
           python -m build --sdist --wheel
 
+      - name: Ensure PYPI token present
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true') }}
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PYPI_API_TOKEN:-}" ]; then
+            echo "Missing repository secret PYPI_API_TOKEN. Create a PyPI API token and add it to repository secrets as PYPI_API_TOKEN." >&2
+            exit 1
+          fi
+          # Non-secret debug signal (does not print token)
+          echo "PYPI_API_TOKEN is present (length=${#PYPI_API_TOKEN})."
+
       - name: Publish to PyPI
         id: publish
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true') }}
@@ -73,16 +86,6 @@ jobs:
           fi
           # Signal that publishing was performed
           echo "pypi_published=true" >> "$GITHUB_OUTPUT"
-
-      - name: Ensure PYPI token present
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true') }}
-        env:
-          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          if [ -z "${PYPI_API_TOKEN:-}" ]; then
-            echo "Missing repository secret PYPI_API_TOKEN. Create a PyPI API token and add it to repository secrets as PYPI_API_TOKEN." >&2
-            exit 1
-          fi
 
       - name: Generate changelog
         id: changelog
