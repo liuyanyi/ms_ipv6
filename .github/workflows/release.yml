@@ -99,10 +99,11 @@ jobs:
             TAG="${{ github.ref_name }}"
           fi
           echo "Using tag: $TAG"
-          # Ensure tags and full history are available
+          # Ensure tags and full history are available (avoid error on complete repo)
           git fetch --tags --prune
-          # Try to unshallow if necessary
-          git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true
+          if git rev-parse --is-shallow-repository >/dev/null 2>&1 && git rev-parse --is-shallow-repository; then
+            git fetch --unshallow || true
+          fi
           # Find previous tag (by creation date) excluding current
           PREV_TAG=$(git tag --sort=-creatordate | grep -v "^$TAG$" | head -n1 || true)
           if [ -n "$PREV_TAG" ]; then
@@ -115,12 +116,13 @@ jobs:
           if [ ! -s changelog.txt ]; then
             echo "- No changes detected." > changelog.txt
           fi
-          # Export as output
-          echo "body<<EOF" >> "$GITHUB_OUTPUT"
-          cat changelog.txt >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          # Export tag used
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Export as output (heredoc must be well-formed)
+          {
+            echo "body<<EOF"
+            cat changelog.txt
+            echo "EOF"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         id: create_release
