@@ -122,13 +122,11 @@ jobs:
           if [ ! -s changelog.txt ]; then
             echo "- No changes detected." > changelog.txt
           fi
-          # Export as output (heredoc must be well-formed)
-          {
-            echo "body<<EOF"
-            cat changelog.txt
-            echo "EOF"
-            echo "tag=$TAG"
-          } >> "$GITHUB_OUTPUT"
+          # Export as output with well-formed delimiters
+          printf "body<<EOF\n" >> "$GITHUB_OUTPUT"
+          cat changelog.txt >> "$GITHUB_OUTPUT"
+          printf "\nEOF\n" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         id: create_release
