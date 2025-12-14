@@ -102,6 +102,51 @@ def is_ipv6_available() -> bool:
 # httpx uses httpcore which provides trace extensions for monitoring connections
 
 
+def _replace_pool_with_logging_backend(
+    transport: httpx.HTTPTransport,
+    on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]],
+    record_last: bool,
+) -> None:
+    """替换transport的连接池，使用带日志记录的网络后端
+
+    Args:
+        transport: HTTPTransport实例
+        on_connect: 连接回调函数
+        record_last: 是否记录连接信息
+    """
+    try:
+        # 创建带日志记录的网络后端
+        default_backend = httpcore.SyncBackend()
+        logging_backend = _ConnectionLoggingNetworkBackend(
+            default_backend,
+            on_connect=on_connect,
+            record_last=record_last,
+            parent_transport=transport,
+        )
+
+        # 获取现有连接池的配置
+        old_pool = transport._pool
+
+        # 重新创建连接池，使用我们的logging backend
+        transport._pool = httpcore.ConnectionPool(
+            ssl_context=getattr(old_pool, "_ssl_context", None),
+            max_connections=getattr(old_pool, "_max_connections", None),
+            max_keepalive_connections=getattr(
+                old_pool, "_max_keepalive_connections", None
+            ),
+            keepalive_expiry=getattr(old_pool, "_keepalive_expiry", None),
+            http1=getattr(old_pool, "_http1", True),
+            http2=getattr(old_pool, "_http2", False),
+            retries=getattr(old_pool, "_retries", 0),
+            local_address=getattr(old_pool, "_local_address", None),
+            uds=getattr(old_pool, "_uds", None),
+            network_backend=logging_backend,
+            socket_options=getattr(old_pool, "_socket_options", None),
+        )
+    except Exception as e:
+        logger.warning("Failed to replace connection pool with logging backend: %s", e)
+
+
 class _ConnectionLoggingNetworkBackend(httpcore.NetworkBackend):
     """网络后端包装器，用于记录连接信息"""
 
@@ -131,11 +176,15 @@ class _ConnectionLoggingNetworkBackend(httpcore.NetworkBackend):
         )
 
         # 尝试从stream中获取socket信息
+        # 注意：这依赖于httpcore的内部实现，可能在未来版本中改变
         try:
             # httpcore的NetworkStream包装了底层socket
-            sock = getattr(stream, "_stream", None)
-            if sock is None:
-                sock = getattr(stream, "_sock", None)
+            # 尝试多种可能的属性名称以提高兼容性
+            sock = None
+            for attr_name in ("_stream", "_sock", "socket"):
+                sock = getattr(stream, attr_name, None)
+                if sock is not None:
+                    break
 
             if sock is not None:
                 try:
@@ -215,28 +264,7 @@ class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
         super().__init__(*args, local_address="::", **kwargs)
 
         # 替换连接池以使用自定义网络后端
-        default_backend = httpcore.SyncBackend()
-        logging_backend = _ConnectionLoggingNetworkBackend(
-            default_backend,
-            on_connect=on_connect,
-            record_last=record_last,
-            parent_transport=self,
-        )
-
-        # 重新创建连接池，使用我们的logging backend
-        self._pool = httpcore.ConnectionPool(
-            ssl_context=self._pool._ssl_context,
-            max_connections=self._pool._max_connections,
-            max_keepalive_connections=self._pool._max_keepalive_connections,
-            keepalive_expiry=self._pool._keepalive_expiry,
-            http1=self._pool._http1,
-            http2=self._pool._http2,
-            retries=self._pool._retries,
-            local_address=self._pool._local_address,
-            uds=self._pool._uds,
-            network_backend=logging_backend,
-            socket_options=self._pool._socket_options,
-        )
+        _replace_pool_with_logging_backend(self, on_connect, record_last)
 
 
 class ObservingHTTPTransport(httpx.HTTPTransport):
@@ -263,28 +291,7 @@ class ObservingHTTPTransport(httpx.HTTPTransport):
         super().__init__(*args, **kwargs)
 
         # 替换连接池以使用自定义网络后端
-        default_backend = httpcore.SyncBackend()
-        logging_backend = _ConnectionLoggingNetworkBackend(
-            default_backend,
-            on_connect=on_connect,
-            record_last=record_last,
-            parent_transport=self,
-        )
-
-        # 重新创建连接池，使用我们的logging backend
-        self._pool = httpcore.ConnectionPool(
-            ssl_context=self._pool._ssl_context,
-            max_connections=self._pool._max_connections,
-            max_keepalive_connections=self._pool._max_keepalive_connections,
-            keepalive_expiry=self._pool._keepalive_expiry,
-            http1=self._pool._http1,
-            http2=self._pool._http2,
-            retries=self._pool._retries,
-            local_address=self._pool._local_address,
-            uds=self._pool._uds,
-            network_backend=logging_backend,
-            socket_options=self._pool._socket_options,
-        )
+        _replace_pool_with_logging_backend(self, on_connect, record_last)
 
 
 def create_observing_session(
