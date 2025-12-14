@@ -137,3 +137,29 @@ pytest -q
 ## 许可证
 
 MIT License
+
+## 开发：打包与上传到 PyPI
+
+本项目使用 PEP 517/518 风格打包。下面是常用脚本（位于 `scripts/`）：
+
+- `scripts/build.sh`: 清理先前构建并使用 `python -m build` 生成 `dist/` 下的 `sdist` 和 `wheel`。
+- `scripts/upload_pypi.sh`: 使用 `twine` 将 `dist/*` 上传到 PyPI。支持通过环境变量 `TWINE_REPOSITORY_URL` 指定自定义仓库。
+- `scripts/release.sh`: 先执行构建，然后可选择上传（可传 `--repository-url` 或 `--skip-upload`）。
+
+快速使用：
+
+```bash
+# 安装开发依赖（包含 build, twine）
+pip install -e ".[dev]"
+
+# 构建分发包
+./scripts/build.sh
+
+# 上传到 PyPI（或配置 ~/.pypirc），或使用环境变量：
+TWINE_USERNAME=__token__ TWINE_PASSWORD=$PYPI_API_TOKEN ./scripts/upload_pypi.sh
+
+# 一步发布（可指定 --repository-url 或 --skip-upload）
+./scripts/release.sh --repository-url https://upload.pypi.org/legacy/
+```
+
+安全提示：建议使用 PyPI API 令牌（在 `TWINE_USERNAME` 中使用 `__token__`，在 `TWINE_PASSWORD` 中使用令牌），或配置安全的 `~/.pypirc` 文件。

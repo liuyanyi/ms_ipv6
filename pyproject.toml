@@ -35,6 +35,8 @@ dev = [
     "pytest>=6.0.0",
     "ruff>=0.1.0",
     "mypy>=0.900",
+    "build>=0.10.0",
+    "twine>=4.0.0",
 ]
 plan = [
     "modelscope>=1.16.0",

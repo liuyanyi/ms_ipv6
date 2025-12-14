@@ -1,0 +1,147 @@
+name: Publish Python package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: 'Repository URL to upload to (optional)'
+        required: false
+        default: ''
+      skip_upload:
+        description: 'If true, build only and skip uploading'
+        required: false
+        default: 'false'
+      release_tag:
+        description: 'Tag name to use for GitHub Release (optional for manual runs)'
+        required: false
+        default: ''
+      release_name:
+        description: 'Release title (optional)'
+        required: false
+        default: ''
+      release_body:
+        description: 'Release body/notes (optional)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build distributions
+        run: |
+          python -m build --sdist --wheel
+
+      - name: Publish to PyPI
+        id: publish
+        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true')) && secrets.PYPI_API_TOKEN != '' }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          # Allow optional repository URL passed when manually dispatching
+          TWINE_REPOSITORY_URL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.repository_url != '' && github.event.inputs.repository_url || '' }}
+        run: |
+          python -m pip install --upgrade twine
+          twine check dist/*
+          if [ -n "${TWINE_REPOSITORY_URL:-}" ]; then
+            twine upload --repository-url "$TWINE_REPOSITORY_URL" dist/*
+          else
+            twine upload dist/*
+          fi
+          # Signal that publishing was performed
+          echo "pypi_published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Fail with helpful message if secret missing
+        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true')) && secrets.PYPI_API_TOKEN == '' }}
+        run: |
+          echo "Missing repository secret PYPI_API_TOKEN. Create a PyPI API token and add it to repository secrets as PYPI_API_TOKEN." >&2
+          exit 1
+
+      - name: Generate changelog
+        id: changelog
+        if: ${{ steps.publish.outputs.pypi_published == 'true' }}
+        run: |
+          set -euo pipefail
+          # Determine tag to use
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "Using tag: $TAG"
+          # Ensure tags and full history are available
+          git fetch --tags --prune
+          # Try to unshallow if necessary
+          git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true
+          # Find previous tag (by creation date) excluding current
+          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^$TAG$" | head -n1 || true)
+          if [ -n "$PREV_TAG" ]; then
+            echo "Previous tag: $PREV_TAG"
+            git log --pretty=format:"- %s (%h) by %an" "$PREV_TAG".."$TAG" > changelog.txt || true
+          else
+            echo "No previous tag found; using commits up to $TAG"
+            git log --pretty=format:"- %s (%h) by %an" "$TAG" > changelog.txt || true
+          fi
+          if [ ! -s changelog.txt ]; then
+            echo "- No changes detected." > changelog.txt
+          fi
+          # Export as output
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          cat changelog.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          # Export tag used
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        id: create_release
+        if: ${{ steps.publish.outputs.pypi_published == 'true' }}
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
+          release_name: ${{ github.event.inputs.release_name }}
+          body: ${{ github.event.inputs.release_body && github.event.inputs.release_body || steps.changelog.outputs.body }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload dist/* as Release assets
+        if: ${{ steps.publish.outputs.pypi_published == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPLOAD_URL: ${{ steps.create_release.outputs.upload_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${UPLOAD_URL:-}" ]; then
+            echo "No upload URL available; skipping asset upload." >&2
+            exit 1
+          fi
+          for f in dist/*; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            echo "Uploading $name to release..."
+            curl -sS -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/octet-stream" --data-binary @"$f" "${UPLOAD_URL}?name=$name" || { echo "Failed to upload $name" >&2; exit 1; }
+          done
