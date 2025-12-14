@@ -228,22 +228,6 @@ class ModelScopeDownloader:
                     "raw" if item.get("raw_url") else "origin",
                 )
 
-                # 在发起请求前输出最近一次连接族
-                try:
-                    transport = getattr(self._session, "_transport", None)
-                    fam = getattr(transport, "last_socket_family", None)
-                    peer = getattr(transport, "last_sockaddr", None)
-                    fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
-                        fam, str(fam)
-                    )
-                    if fam is None:
-                        logger.debug("上次连接: 无记录")
-                    else:
-                        logger.debug("上次连接: family={} peer={}", fam_str, peer)
-                except Exception:
-                    # 记录失败不影响下载
-                    pass
-
                 expected_size = item.get("size")
                 expected_sha = item.get("sha256")
                 hasher = hashlib.sha256() if isinstance(expected_sha, str) else None
@@ -251,6 +235,22 @@ class ModelScopeDownloader:
 
                 with self._session.stream("GET", url, timeout=timeout) as r:
                     r.raise_for_status()
+
+                    # 在请求建立后输出当前连接信息
+                    try:
+                        transport = getattr(self._session, "_transport", None)
+                        fam = getattr(transport, "last_socket_family", None)
+                        peer = getattr(transport, "last_sockaddr", None)
+                        fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
+                            fam, str(fam)
+                        )
+                        if fam is None:
+                            logger.debug("当前连接: 无记录")
+                        else:
+                            logger.debug("当前连接: family={} peer={}", fam_str, peer)
+                    except Exception:
+                        # 记录失败不影响下载
+                        pass
                     with open(tmp_path, "wb") as wf:
                         for chunk in r.iter_bytes(chunk_size=1024 * 1024):
                             if not chunk:
