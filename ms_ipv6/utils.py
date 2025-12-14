@@ -209,3 +209,24 @@ def get_default_cache_dir() -> str:
     else:  # Unix-like
         base_dir = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
         return os.path.join(base_dir, "ms_ipv6")
+
+
+def get_file_size_human(size_bytes: int) -> str:
+    """
+    将文件大小转换为人类可读格式
+
+    Args:
+        size_bytes: 文件大小（字节）
+
+    Returns:
+        人类可读的文件大小字符串
+    """
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024**2:
+        return f"{size_bytes / 1024:.2f} KB"
+    elif size_bytes < 1024**3:
+        return f"{size_bytes / (1024**2):.2f} MB"
+    else:
+        return f"{size_bytes / (1024**3):.2f} GB"
+    return f"{size_bytes} B"

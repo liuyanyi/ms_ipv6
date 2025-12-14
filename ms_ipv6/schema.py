@@ -19,6 +19,8 @@ class PlanFile(TypedDict):
     remote_path: str
     # Optional size in bytes (if known)
     size: NotRequired[int]
+    # Optional file size in human-readable format (if known)
+    size_human: NotRequired[str]
     # Optional raw CDN URL resolved via redirect (useful for IPv6-only downloads)
     raw_url: NotRequired[str]
     # Optional SHA-256 checksum for integrity verification

@@ -18,7 +18,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from .schema import Plan, PlanFile
-from .utils import create_ipv6_session, create_observing_session
+from .utils import create_ipv6_session, create_observing_session, get_file_size_human
 
 
 class ModelScopeDownloader:
@@ -452,6 +452,7 @@ class ModelScopeDownloader:
                 if len(dataset_files) < page_size:
                     break
                 page_number += 1
+        logger.info(f"获取到 {len(repo_files)} 个文件条目")
 
         # 归一化模式并过滤
         def _normalize_patterns(
@@ -491,6 +492,7 @@ class ModelScopeDownloader:
             ):
                 continue
             filtered_files.append(f)
+        logger.info(f"过滤后剩余 {len(filtered_files)} 个文件条目")
 
         # 解析重定向，获得可用的 raw_url（不下载，仅做跳转探测）
         def _resolve_raw_url(
@@ -523,7 +525,7 @@ class ModelScopeDownloader:
 
         # 生成计划条目（使用相对路径）
         plan_files: List[PlanFile] = []
-        for f in filtered_files:
+        for f in tqdm(filtered_files, desc="生成计划"):
             remote_path = f["Path"]
             if repo_type == "model":
                 url = get_file_download_url(
@@ -546,11 +548,16 @@ class ModelScopeDownloader:
             raw = _resolve_raw_url(
                 url, headers=headers if repo_type == "model" else None, cookies=cookies
             )
+            file_size = f.get("Size")
+            file_size_human = (
+                get_file_size_human(file_size) if isinstance(file_size, int) else None
+            )
             entry: PlanFile = {
                 "url": url,
                 "path": rel_path,
                 "remote_path": remote_path,
                 "size": f.get("Size"),
+                "size_human": file_size_human,
             }
             sha = _extract_sha256(f)
             if sha:
