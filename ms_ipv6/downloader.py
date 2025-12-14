@@ -13,12 +13,12 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Dict, List, Optional, Union
 
-import requests
+import httpx
 from loguru import logger
 from tqdm import tqdm
 
 from .schema import Plan, PlanFile
-from .utils import create_ipv6_session, create_observing_session
+from .utils import create_ipv6_session, create_observing_session, get_file_size_human
 
 
 class ModelScopeDownloader:
@@ -228,32 +228,31 @@ class ModelScopeDownloader:
                     "raw" if item.get("raw_url") else "origin",
                 )
 
-                # 在发起请求前输出最近一次连接族（按 URL scheme 选择适配器）
-                try:
-                    scheme = url.split(":", 1)[0].lower()
-                    adapter = self._session.adapters.get(f"{scheme}://")
-                    fam = getattr(adapter, "last_socket_family", None)
-                    peer = getattr(adapter, "last_sockaddr", None)
-                    fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
-                        fam, str(fam)
-                    )
-                    if fam is None:
-                        logger.debug("上次连接: 无记录")
-                    else:
-                        logger.debug("上次连接: family={} peer={}", fam_str, peer)
-                except Exception:
-                    # 记录失败不影响下载
-                    pass
-
                 expected_size = item.get("size")
                 expected_sha = item.get("sha256")
                 hasher = hashlib.sha256() if isinstance(expected_sha, str) else None
                 bytes_written = 0
 
-                with self._session.get(url, stream=True, timeout=timeout) as r:
+                with self._session.stream("GET", url, timeout=timeout) as r:
                     r.raise_for_status()
+
+                    # 在请求建立后输出当前连接信息
+                    try:
+                        transport = getattr(self._session, "_transport", None)
+                        fam = getattr(transport, "last_socket_family", None)
+                        peer = getattr(transport, "last_sockaddr", None)
+                        fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
+                            fam, str(fam)
+                        )
+                        if fam is None:
+                            logger.debug("当前连接: 无记录")
+                        else:
+                            logger.debug("当前连接: family={} peer={}", fam_str, peer)
+                    except Exception:
+                        # 记录失败不影响下载
+                        pass
                     with open(tmp_path, "wb") as wf:
-                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        for chunk in r.iter_bytes(chunk_size=1024 * 1024):
                             if not chunk:
                                 continue
                             wf.write(chunk)
@@ -453,6 +452,7 @@ class ModelScopeDownloader:
                 if len(dataset_files) < page_size:
                     break
                 page_number += 1
+        logger.info(f"获取到 {len(repo_files)} 个文件条目")
 
         # 归一化模式并过滤
         def _normalize_patterns(
@@ -492,6 +492,7 @@ class ModelScopeDownloader:
             ):
                 continue
             filtered_files.append(f)
+        logger.info(f"过滤后剩余 {len(filtered_files)} 个文件条目")
 
         # 解析重定向，获得可用的 raw_url（不下载，仅做跳转探测）
         def _resolve_raw_url(
@@ -499,21 +500,17 @@ class ModelScopeDownloader:
         ) -> Optional[str]:
             try:
                 # 允许重定向，拿最终的 URL；使用 stream 避免下载主体
-                with requests.Session() as _tmp_sess:
-                    r = _tmp_sess.get(
+                with httpx.Client(follow_redirects=True) as _tmp_client:
+                    with _tmp_client.stream(
+                        "GET",
                         u,
-                        allow_redirects=True,
-                        stream=True,
                         timeout=10,
                         headers=headers,
                         cookies=cookies,
-                    )
-                    try:
+                    ) as r:
                         # 存在重定向历史并且最终 URL 与原始不同，则视为直链
-                        if getattr(r, "history", None) and r.url and r.url != u:
-                            return r.url
-                    finally:
-                        r.close()
+                        if r.history and str(r.url) != u:
+                            return str(r.url)
             except Exception:
                 return None
             return None
@@ -528,7 +525,7 @@ class ModelScopeDownloader:
 
         # 生成计划条目（使用相对路径）
         plan_files: List[PlanFile] = []
-        for f in filtered_files:
+        for f in tqdm(filtered_files, desc="生成计划"):
             remote_path = f["Path"]
             if repo_type == "model":
                 url = get_file_download_url(
@@ -551,11 +548,16 @@ class ModelScopeDownloader:
             raw = _resolve_raw_url(
                 url, headers=headers if repo_type == "model" else None, cookies=cookies
             )
+            file_size = f.get("Size")
+            file_size_human = (
+                get_file_size_human(file_size) if isinstance(file_size, int) else None
+            )
             entry: PlanFile = {
                 "url": url,
                 "path": rel_path,
                 "remote_path": remote_path,
                 "size": f.get("Size"),
+                "size_human": file_size_human,
             }
             sha = _extract_sha256(f)
             if sha:

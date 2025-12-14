@@ -8,11 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
-import requests
+import httpcore
+import httpx
 from loguru import logger
-from requests.adapters import HTTPAdapter
-
-# from urllib3.util.connection import create_connection  # no longer used
 
 
 def setup_logging(verbose: bool = False, *, use_tqdm: bool = False) -> None:
@@ -100,9 +98,148 @@ def is_ipv6_available() -> bool:
         return False
 
 
-class IPv6OnlyHTTPAdapter(HTTPAdapter):
+# Custom transport classes for httpx with connection logging
+# httpx uses httpcore which provides trace extensions for monitoring connections
+
+
+def _replace_pool_with_logging_backend(
+    transport: httpx.HTTPTransport,
+    on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]],
+    record_last: bool,
+) -> None:
+    """替换transport的连接池，使用带日志记录的网络后端
+
+    Args:
+        transport: HTTPTransport实例
+        on_connect: 连接回调函数
+        record_last: 是否记录连接信息
     """
-    强制使用IPv6连接的HTTP适配器
+    try:
+        # 创建带日志记录的网络后端
+        default_backend = httpcore.SyncBackend()
+        logging_backend = _ConnectionLoggingNetworkBackend(
+            default_backend,
+            on_connect=on_connect,
+            record_last=record_last,
+            parent_transport=transport,
+        )
+
+        # 获取现有连接池的配置
+        old_pool = transport._pool
+
+        # 重新创建连接池，使用我们的logging backend
+        transport._pool = httpcore.ConnectionPool(
+            ssl_context=getattr(old_pool, "_ssl_context", None),
+            max_connections=getattr(old_pool, "_max_connections", None),
+            max_keepalive_connections=getattr(
+                old_pool, "_max_keepalive_connections", None
+            ),
+            keepalive_expiry=getattr(old_pool, "_keepalive_expiry", None),
+            http1=getattr(old_pool, "_http1", True),
+            http2=getattr(old_pool, "_http2", False),
+            retries=getattr(old_pool, "_retries", 0),
+            local_address=getattr(old_pool, "_local_address", None),
+            uds=getattr(old_pool, "_uds", None),
+            network_backend=logging_backend,
+            socket_options=getattr(old_pool, "_socket_options", None),
+        )
+    except Exception as e:
+        logger.warning("Failed to replace connection pool with logging backend: %s", e)
+
+
+class _ConnectionLoggingNetworkBackend(httpcore.NetworkBackend):
+    """网络后端包装器，用于记录连接信息"""
+
+    def __init__(
+        self,
+        backend: httpcore.NetworkBackend,
+        on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]] = None,
+        record_last: bool = False,
+        parent_transport: Any = None,
+    ):
+        self._backend = backend
+        self._on_connect = on_connect
+        self._record_last = record_last
+        self._parent_transport = parent_transport
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: Optional[float] = None,
+        local_address: Optional[str] = None,
+        socket_options: Optional[list] = None,
+    ) -> httpcore.NetworkStream:
+        """连接TCP并记录连接信息"""
+        stream = self._backend.connect_tcp(
+            host, port, timeout, local_address, socket_options
+        )
+
+        # 尝试从stream中获取socket信息
+        # 注意：这依赖于httpcore的内部实现，可能在未来版本中改变
+        try:
+            # httpcore的NetworkStream包装了底层socket
+            # 尝试多种可能的属性名称以提高兼容性
+            sock = None
+            for attr_name in ("_stream", "_sock", "socket"):
+                sock = getattr(stream, attr_name, None)
+                if sock is not None:
+                    break
+
+            if sock is not None:
+                try:
+                    family = getattr(sock, "family", None)
+                    sockaddr = (
+                        sock.getpeername() if hasattr(sock, "getpeername") else None
+                    )
+
+                    # 记录连接信息
+                    if self._record_last and self._parent_transport is not None:
+                        self._parent_transport.last_socket_family = family
+                        self._parent_transport.last_sockaddr = sockaddr
+
+                    # 触发回调
+                    if self._on_connect is not None:
+                        try:
+                            self._on_connect(sock, sockaddr)
+                        except Exception as cb_err:
+                            logger.debug("on_connect callback raised: %r", cb_err)
+
+                    # 记录日志
+                    fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
+                        family, str(family)
+                    )
+                    logger.debug(
+                        "connection established: host={} port={} family={} peer={}",
+                        host,
+                        port,
+                        fam_str,
+                        sockaddr,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to extract socket info: %s", e)
+        except Exception as e:
+            logger.debug("Failed to log connection: %s", e)
+
+        return stream
+
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: Optional[float] = None,
+        socket_options: Optional[list] = None,
+    ) -> httpcore.NetworkStream:
+        return self._backend.connect_unix_socket(path, timeout, socket_options)
+
+    def sleep(self, seconds: float) -> None:
+        return self._backend.sleep(seconds)
+
+
+class IPv6OnlyHTTPTransport(httpx.HTTPTransport):
+    """
+    IPv6优先的HTTP传输类，支持连接信息记录和回调
+
+    使用自定义NetworkBackend来捕获连接信息并记录日志
     """
 
     def __init__(
@@ -112,151 +249,26 @@ class IPv6OnlyHTTPAdapter(HTTPAdapter):
         record_last: bool = False,
         **kwargs: Any,
     ) -> None:
-        """创建适配器
+        """创建传输对象
 
         Args:
-            on_connect: 当底层 TCP 连接建立后触发的回调，形参为 (sock, sockaddr)
-            record_last: 是否记录最近一次连接的信息（family、sockaddr）
+            on_connect: 连接建立后回调
+            record_last: 是否记录连接信息
         """
-        super().__init__(*args, **kwargs)
         self._on_connect = on_connect
         self._record_last = record_last
         self.last_socket_family: Optional[int] = None
         self.last_sockaddr: Optional[Tuple[Any, ...]] = None
 
-    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
-        """初始化连接池管理器，强制使用IPv6，并在建立连接时触发回调/记录。"""
-        from urllib3.connection import HTTPConnection as BaseHTTPConnection
-        from urllib3.connection import HTTPSConnection as BaseHTTPSConnection
-        from urllib3.connectionpool import HTTPConnectionPool as BaseHTTPPool
-        from urllib3.connectionpool import HTTPSConnectionPool as BaseHTTPSPool
+        # httpx 提示使用 IPv6：通过 local_address 参数
+        super().__init__(*args, local_address="::", **kwargs)
 
-        adapter = self
-
-        class IPv6HTTPConnection(BaseHTTPConnection):
-            def _new_conn(self):  # type: ignore[override]
-                host, port = self.host, self.port
-                try:
-                    addr_info = socket.getaddrinfo(
-                        host, port, socket.AF_INET6, socket.SOCK_STREAM
-                    )
-                    if not addr_info:
-                        raise socket.gaierror(f"No IPv6 addresses found for {host}")
-                    _, _, _, _, sockaddr = addr_info[0]
-
-                    # 直接创建 IPv6 socket 进行连接
-                    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-                    # 设置连接超时（尽量从 Timeout 对象读取 connect 超时）
-                    connect_timeout = getattr(
-                        getattr(self, "timeout", None), "connect_timeout", None
-                    )
-                    if connect_timeout is None:
-                        # 兼容纯数值或 None
-                        connect_timeout = getattr(self, "timeout", None)
-                    if connect_timeout is not None:
-                        try:
-                            sock.settimeout(float(connect_timeout))
-                        except Exception:
-                            pass
-
-                    sock.connect(sockaddr)
-
-                    # 连接建立后尽量获取真实对端地址
-                    peer = None
-                    try:
-                        peer = sock.getpeername()
-                    except Exception:
-                        peer = sockaddr
-
-                    # 记录与回调
-                    if adapter._record_last:
-                        try:
-                            adapter.last_socket_family = getattr(sock, "family", None)
-                            adapter.last_sockaddr = peer
-                        except Exception:
-                            pass
-                    if adapter._on_connect is not None:
-                        try:
-                            adapter._on_connect(sock, peer)
-                        except Exception as cb_err:
-                            logger.debug("on_connect callback raised: %r", cb_err)
-                    return sock
-                except socket.gaierror as e:
-                    raise ConnectionError(
-                        f"IPv6 connection failed for {host}: {e}"
-                    ) from e
-
-        class IPv6HTTPSConnection(IPv6HTTPConnection, BaseHTTPSConnection):
-            # 复用 _new_conn 逻辑，TLS 包装在上层 connect 流程完成
-            pass
-
-        class IPv6HTTPPool(BaseHTTPPool):
-            ConnectionCls = IPv6HTTPConnection
-
-        class IPv6HTTPSPool(BaseHTTPSPool):
-            ConnectionCls = IPv6HTTPSConnection
-
-        pool_classes_by_scheme = {
-            "http": IPv6HTTPPool,
-            "https": IPv6HTTPSPool,
-        }
-
-        # 先创建 PoolManager，再直接设置其 pool_classes_by_scheme，避免把该参数放进 request_context
-        super().init_poolmanager(*args, **kwargs)
-        try:
-            self.poolmanager.pool_classes_by_scheme = pool_classes_by_scheme  # type: ignore[attr-defined]
-        except Exception:
-            # 如果 urllib3 版本不支持该属性，则回退到默认行为（但一般 v2.x 支持）
-            logger.debug(
-                "pool_classes_by_scheme attribute not set; falling back to default pools"
-            )
-
-    # 统一的每请求日志：在请求结束后打印 url + family + peer
-    def send(self, request, **kwargs):  # type: ignore[override]
-        response = super().send(request, **kwargs)
-        fam = None
-        peer = None
-        # 优先从 response 中提取
-        try:
-            raw = getattr(response, "raw", None)
-            # urllib3 v2: _connection.sock
-            conn = getattr(raw, "_connection", None)
-            if conn is not None and hasattr(conn, "sock") and conn.sock is not None:
-                sock = conn.sock
-                fam = getattr(sock, "family", None)
-                try:
-                    peer = sock.getpeername()
-                except Exception:
-                    peer = self.last_sockaddr
-            else:
-                # 其他路径（尽力而为）
-                fp = getattr(raw, "_fp", None)
-                if fp is not None and hasattr(fp, "fp"):
-                    r2 = getattr(fp.fp, "raw", None)
-                    if r2 is not None and hasattr(r2, "_sock"):
-                        sock = r2._sock
-                        fam = getattr(sock, "family", None)
-                        try:
-                            peer = sock.getpeername()
-                        except Exception:
-                            peer = self.last_sockaddr
-        except Exception:
-            pass
-        # 兜底使用最近记录
-        if fam is None:
-            fam = self.last_socket_family
-        if peer is None:
-            peer = self.last_sockaddr
-        fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(fam, str(fam))
-        logger.debug("request: url=%s family=%s peer=%s", request.url, fam_str, peer)
-        return response
+        # 替换连接池以使用自定义网络后端
+        _replace_pool_with_logging_backend(self, on_connect, record_last)
 
 
-class ObservingHTTPAdapter(HTTPAdapter):
-    """仅用于记录连接族（IPv4/IPv6）的适配器，不改变默认连接策略。
-
-    支持 on_connect 回调与最近一次连接记录。
-    """
+class ObservingHTTPTransport(httpx.HTTPTransport):
+    """HTTP传输类，用于观察和记录连接信息"""
 
     def __init__(
         self,
@@ -265,136 +277,64 @@ class ObservingHTTPAdapter(HTTPAdapter):
         record_last: bool = False,
         **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        """创建传输对象
+
+        Args:
+            on_connect: 连接建立后回调
+            record_last: 是否记录连接信息
+        """
         self._on_connect = on_connect
         self._record_last = record_last
         self.last_socket_family: Optional[int] = None
         self.last_sockaddr: Optional[Tuple[Any, ...]] = None
 
-    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
-        """初始化连接池管理器，并在建立连接时触发回调/记录。"""
-        from urllib3.connection import HTTPConnection as BaseHTTPConnection
-        from urllib3.connection import HTTPSConnection as BaseHTTPSConnection
-        from urllib3.connectionpool import HTTPConnectionPool as BaseHTTPPool
-        from urllib3.connectionpool import HTTPSConnectionPool as BaseHTTPSPool
+        super().__init__(*args, **kwargs)
 
-        adapter = self
-
-        class ObservingHTTPConnection(BaseHTTPConnection):
-            def _new_conn(self):  # type: ignore[override]
-                sock = super()._new_conn()
-                # 记录/回调
-                try:
-                    sockaddr = None
-                    try:
-                        sockaddr = sock.getpeername()
-                    except Exception:
-                        pass
-                    if adapter._record_last:
-                        adapter.last_socket_family = getattr(sock, "family", None)
-                        adapter.last_sockaddr = sockaddr
-                    if adapter._on_connect is not None:
-                        try:
-                            adapter._on_connect(sock, sockaddr)
-                        except Exception as cb_err:
-                            logger.debug("on_connect callback raised: %r", cb_err)
-                except Exception:
-                    pass
-                return sock
-
-        class ObservingHTTPSConnection(ObservingHTTPConnection, BaseHTTPSConnection):
-            pass
-
-        class ObservingHTTPPool(BaseHTTPPool):
-            ConnectionCls = ObservingHTTPConnection
-
-        class ObservingHTTPSPool(BaseHTTPSPool):
-            ConnectionCls = ObservingHTTPSConnection
-
-        pool_classes_by_scheme = {
-            "http": ObservingHTTPPool,
-            "https": ObservingHTTPSPool,
-        }
-
-        super().init_poolmanager(*args, **kwargs)
-        try:
-            self.poolmanager.pool_classes_by_scheme = pool_classes_by_scheme  # type: ignore[attr-defined]
-        except Exception:
-            logger.debug(
-                "pool_classes_by_scheme attribute not set for ObservingHTTPAdapter"
-            )
-
-    # 统一的每请求日志：在请求结束后打印 url + family + peer
-    def send(self, request, **kwargs):  # type: ignore[override]
-        response = super().send(request, **kwargs)
-        fam = None
-        peer = None
-        try:
-            raw = getattr(response, "raw", None)
-            conn = getattr(raw, "_connection", None)
-            if conn is not None and hasattr(conn, "sock") and conn.sock is not None:
-                sock = conn.sock
-                fam = getattr(sock, "family", None)
-                try:
-                    peer = sock.getpeername()
-                except Exception:
-                    peer = self.last_sockaddr
-            else:
-                fp = getattr(raw, "_fp", None)
-                if fp is not None and hasattr(fp, "fp"):
-                    r2 = getattr(fp.fp, "raw", None)
-                    if r2 is not None and hasattr(r2, "_sock"):
-                        sock = r2._sock
-                        fam = getattr(sock, "family", None)
-                        try:
-                            peer = sock.getpeername()
-                        except Exception:
-                            peer = self.last_sockaddr
-        except Exception:
-            pass
-        if fam is None:
-            fam = self.last_socket_family
-        if peer is None:
-            peer = self.last_sockaddr
-        fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(fam, str(fam))
-        logger.debug(f"request: url={request.url} family={fam_str} peer={peer}")
-        return response
+        # 替换连接池以使用自定义网络后端
+        _replace_pool_with_logging_backend(self, on_connect, record_last)
 
 
 def create_observing_session(
     *,
     on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]] = None,
     record_last: bool = False,
-) -> requests.Session:
-    """创建带连接族观察能力的 requests 会话，不改变寻址策略。
+) -> httpx.Client:
+    """创建带连接观察能力的 httpx 客户端
+
+    在verbose模式下会记录连接的family（IPv4/IPv6）和peer地址
 
     Args:
         on_connect: 连接建立后回调
-        record_last: 是否记录最近一次连接
+        record_last: 是否记录最近一次连接信息
+
+    Returns:
+        httpx.Client对象
     """
-    session = requests.Session()
-    adapter = ObservingHTTPAdapter(on_connect=on_connect, record_last=record_last)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
+    transport = ObservingHTTPTransport(on_connect=on_connect, record_last=record_last)
+    client = httpx.Client(transport=transport, follow_redirects=True)
+    return client
 
 
 def create_ipv6_session(
     *,
     on_connect: Optional[Callable[[socket.socket, Tuple[Any, ...]], None]] = None,
     record_last: bool = False,
-) -> requests.Session:
+) -> httpx.Client:
     """
-    创建仅使用IPv6的requests会话
+    创建IPv6优先的httpx客户端
+
+    在verbose模式下会记录连接的family（IPv4/IPv6）和peer地址
+
+    Args:
+        on_connect: 连接建立后回调
+        record_last: 是否记录最近一次连接信息
 
     Returns:
-        配置为IPv6的requests.Session对象
+        配置为IPv6优先的httpx.Client对象
     """
-    session = requests.Session()
-    adapter = IPv6OnlyHTTPAdapter(on_connect=on_connect, record_last=record_last)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
+    transport = IPv6OnlyHTTPTransport(on_connect=on_connect, record_last=record_last)
+    client = httpx.Client(transport=transport, follow_redirects=True)
+    return client
 
 
 def get_default_cache_dir() -> str:
@@ -410,3 +350,24 @@ def get_default_cache_dir() -> str:
     else:  # Unix-like
         base_dir = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
         return os.path.join(base_dir, "ms_ipv6")
+
+
+def get_file_size_human(size_bytes: int) -> str:
+    """
+    将文件大小转换为人类可读格式
+
+    Args:
+        size_bytes: 文件大小（字节）
+
+    Returns:
+        人类可读的文件大小字符串
+    """
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024**2:
+        return f"{size_bytes / 1024:.2f} KB"
+    elif size_bytes < 1024**3:
+        return f"{size_bytes / (1024**2):.2f} MB"
+    else:
+        return f"{size_bytes / (1024**3):.2f} GB"
+    return f"{size_bytes} B"

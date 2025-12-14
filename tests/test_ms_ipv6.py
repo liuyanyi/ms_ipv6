@@ -10,7 +10,7 @@ import pytest
 
 from ms_ipv6.downloader import ModelScopeDownloader
 from ms_ipv6.utils import (
-    IPv6OnlyHTTPAdapter,
+    IPv6OnlyHTTPTransport,
     create_ipv6_session,
     ensure_dir,
     get_default_cache_dir,
@@ -77,19 +77,16 @@ class TestSession:
         """测试创建IPv6会话"""
         session = create_ipv6_session()
         assert session is not None
-        # 验证适配器已正确安装
-        assert "http://" in session.adapters
-        assert "https://" in session.adapters
-        # 验证适配器是IPv6OnlyHTTPAdapter类型
-        http_adapter = session.adapters["http://"]
-        https_adapter = session.adapters["https://"]
-        assert isinstance(http_adapter, IPv6OnlyHTTPAdapter)
-        assert isinstance(https_adapter, IPv6OnlyHTTPAdapter)
+        # 验证transport已正确配置
+        assert hasattr(session, "_transport")
+        # 验证transport是IPv6OnlyHTTPTransport类型
+        transport = session._transport
+        assert isinstance(transport, IPv6OnlyHTTPTransport)
 
     def test_ipv6_adapter_creation(self):
-        """测试IPv6适配器的创建"""
-        adapter = IPv6OnlyHTTPAdapter()
-        assert adapter is not None
+        """测试IPv6传输类的创建"""
+        transport = IPv6OnlyHTTPTransport()
+        assert transport is not None
 
     def test_ipv6_connection(self):
         """测试IPv6连接：使用 on_connect 回调记录 socket.family（严格模式，不跳过）。"""
