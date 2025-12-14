@@ -57,7 +57,7 @@ jobs:
 
       - name: Publish to PyPI
         id: publish
-        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true')) && secrets.PYPI_API_TOKEN != '' }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true') }}
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
@@ -74,11 +74,15 @@ jobs:
           # Signal that publishing was performed
           echo "pypi_published=true" >> "$GITHUB_OUTPUT"
 
-      - name: Fail with helpful message if secret missing
-        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true')) && secrets.PYPI_API_TOKEN == '' }}
+      - name: Ensure PYPI token present
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_upload != 'true') }}
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          echo "Missing repository secret PYPI_API_TOKEN. Create a PyPI API token and add it to repository secrets as PYPI_API_TOKEN." >&2
-          exit 1
+          if [ -z "${PYPI_API_TOKEN:-}" ]; then
+            echo "Missing repository secret PYPI_API_TOKEN. Create a PyPI API token and add it to repository secrets as PYPI_API_TOKEN." >&2
+            exit 1
+          fi
 
       - name: Generate changelog
         id: changelog
