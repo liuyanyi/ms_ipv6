@@ -60,11 +60,20 @@ def create_parser() -> argparse.ArgumentParser:
         help="忽略下载的通配模式，可多次使用，例如 --ignore-pattern '*.tmp'",
     )
 
-    # 子命令：download（根据计划下载）——支持 IPv6
+    # 子命令：download（根据计划下载）——raw 文件默认强制 IPv6
     dl_parser = subparsers.add_parser(
         "download", parents=[common], help="根据下载计划执行下载"
     )
-    dl_parser.add_argument("--ipv6", action="store_true", help="强制使用IPV6")
+    dl_parser.add_argument(
+        "--allow-raw-direct",
+        action="store_true",
+        help="raw_url 跳过 AAAA 检查和 IPv6 强制，直接下载",
+    )
+    dl_parser.add_argument(
+        "--raw-dns",
+        default="auto",
+        help="raw_url AAAA 解析使用的 DNS：auto/system/aliyun/tencent/cloudflare/google/quad9 或自定义DNS地址，默认 auto",
+    )
     dl_parser.add_argument("plan_file", help="计划文件路径（_msv6.json）")
     dl_parser.add_argument(
         "--local-dir", required=True, help="文件保存的本地根目录（必填）"
@@ -79,15 +88,18 @@ def create_parser() -> argparse.ArgumentParser:
         help="不跳过已存在文件（与 --overwrite 互斥时以覆盖为准）",
     )
     dl_parser.add_argument(
-        "--only-raw", action="store_true", help="仅下载带 raw_url 的条目（IPv6 直链）"
-    )
-    dl_parser.add_argument(
-        "--only-no-raw",
-        action="store_true",
-        help="仅下载不带 raw_url 的条目（回源地址）",
-    )
-    dl_parser.add_argument(
         "--timeout", type=int, default=60, help="HTTP 超时秒数，默认 60"
+    )
+
+    # 子命令：test（测试 raw_url DNS AAAA 解析）
+    test_parser = subparsers.add_parser(
+        "test", parents=[common], help="测试计划中 raw_url 的 AAAA 解析"
+    )
+    test_parser.add_argument("plan_file", help="计划文件路径（_msv6.json）")
+    test_parser.add_argument(
+        "--raw-dns",
+        action="append",
+        help="指定测试 DNS，可多次使用，支持 auto/system/aliyun/tencent/cloudflare/google/quad9 或自定义DNS地址；未指定时测试全部内置DNS",
     )
 
     # 子命令：version（显示版本信息）
@@ -110,10 +122,7 @@ def main() -> None:
         logger.info(f"ms-ipv6 {__version__}")
         return
 
-    use_ipv6 = (
-        bool(getattr(args, "ipv6", False)) if args.command == "download" else False
-    )
-    downloader = ModelScopeDownloader(use_ipv6=use_ipv6)
+    downloader = ModelScopeDownloader(use_ipv4=(args.command == "download"))
 
     if args.command == "plan":
         repo_type = args.repo_type
@@ -128,21 +137,34 @@ def main() -> None:
         )
         logger.info(f"下载计划已生成: {plan_path}")
     elif args.command == "download":
-        summary = downloader.download_from_plan(
-            args.plan_file,
-            local_dir=args.local_dir,
-            workers=args.workers,
-            overwrite=args.overwrite,
-            skip_existing=not args.no_skip_existing,
-            timeout=args.timeout,
-            only_raw=args.only_raw,
-            only_no_raw=args.only_no_raw,
-        )
+        try:
+            summary = downloader.download_from_plan(
+                args.plan_file,
+                local_dir=args.local_dir,
+                workers=args.workers,
+                overwrite=args.overwrite,
+                skip_existing=not args.no_skip_existing,
+                timeout=args.timeout,
+                allow_raw_direct=args.allow_raw_direct,
+                raw_dns=args.raw_dns,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("下载失败: {}", e)
+            raise SystemExit(1) from None
         logger.info(
             "下载结果: total={total}, success={success}, skipped={skipped}, failed={failed}".format(
                 **summary
             )
         )
+    elif args.command == "test":
+        try:
+            downloader.test_raw_dns_from_plan(
+                args.plan_file,
+                raw_dns=args.raw_dns,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("DNS测试失败: {}", e)
+            raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

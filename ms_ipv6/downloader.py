@@ -12,28 +12,48 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
 from tqdm import tqdm
 
 from .schema import Plan, PlanFile
-from .utils import create_ipv6_session, create_observing_session, get_file_size_human
+from .utils import (
+    create_forced_ipv6_session,
+    create_ipv4_session,
+    create_ipv6_session,
+    create_observing_session,
+    expand_raw_dns_resolvers,
+    get_file_size_human,
+    normalize_raw_dns,
+    resolve_aaaa_records,
+)
 
 
 class ModelScopeDownloader:
     """ModelScope下载器类"""
 
-    def __init__(self, cache_dir: Optional[str] = None, use_ipv6: bool = False):
+    def __init__(
+        self,
+        cache_dir: Optional[str] = None,
+        use_ipv6: bool = False,
+        use_ipv4: bool = False,
+    ):
         """
         初始化下载器
 
         Args:
             cache_dir: 缓存目录
             use_ipv6: 是否使用IPV6
+            use_ipv4: 是否强制使用IPV4
         """
+        if use_ipv4 and use_ipv6:
+            raise ValueError("use_ipv4 与 use_ipv6 不能同时使用")
+
         self.cache_dir = cache_dir or os.path.expanduser("~/.cache/ms_ipv6")
         self.use_ipv6 = use_ipv6
+        self.use_ipv4 = use_ipv4
         # 用于去重相邻的连接日志
         self._last_conn_log: Optional[tuple] = None
 
@@ -69,13 +89,22 @@ class ModelScopeDownloader:
             self._last_conn_log = key
             logger.debug("connection: family={} peer={}", fam_str, peer)
 
+        self._log_family = _log_family
+
         def _factory():
             if self.use_ipv6:
-                sess = create_ipv6_session(on_connect=_log_family, record_last=True)
+                sess = create_ipv6_session(
+                    on_connect=self._log_family, record_last=True
+                )
                 logger.info("使用IPv6专用会话进行网络请求")
+            elif self.use_ipv4:
+                sess = create_ipv4_session(
+                    on_connect=self._log_family, record_last=True
+                )
+                logger.info("使用IPv4专用会话进行网络请求")
             else:
                 sess = create_observing_session(
-                    on_connect=_log_family, record_last=True
+                    on_connect=self._log_family, record_last=True
                 )
                 logger.info("使用标准会话进行网络请求")
             return sess
@@ -87,6 +116,196 @@ class ModelScopeDownloader:
         if hasattr(self._session, "ensure"):
             self._session.ensure()  # type: ignore[union-attr]
 
+    def test_raw_dns_from_plan(
+        self,
+        plan_path: str,
+        *,
+        raw_dns: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """测试计划中 raw_url 域名的 AAAA 解析，不执行下载。"""
+        from rich import box
+        from rich.console import Console
+        from rich.table import Table
+        from rich.text import Text
+
+        with open(plan_path, encoding="utf-8") as f:
+            plan: Plan = json.load(f)
+
+        files: List[PlanFile] = plan.get("files", [])  # type: ignore[assignment]
+        if not isinstance(files, list):
+            raise ValueError("计划文件不合法：缺少 files")
+
+        raw_files = [item for item in files if item.get("raw_url")]
+        auto_mode = any(
+            item.strip().lower() == "auto"
+            for spec in (raw_dns or [])
+            for item in str(spec).split(",")
+        )
+        resolvers = expand_raw_dns_resolvers(["auto"] if auto_mode else raw_dns)
+        raw_hosts: Dict[str, List[str]] = {}
+        invalid_raw_files: List[Dict[str, Any]] = []
+        rows: List[Dict[str, Any]] = []
+        raw_hosts_with_v6 = set()
+
+        for item in sorted(raw_files, key=lambda x: x.get("path", "")):
+            rel_path = item.get("path", "")
+            raw_url = str(item.get("raw_url", ""))
+            hostname = urlparse(raw_url).hostname
+            if not hostname:
+                invalid_raw_files.append(
+                    {
+                        "path": rel_path,
+                        "host": "",
+                        "dns": "",
+                        "status": "error",
+                        "addresses": [],
+                        "error": "raw_url 缺少域名",
+                    }
+                )
+                continue
+            raw_hosts.setdefault(hostname, []).append(str(rel_path))
+
+        for hostname, paths in sorted(raw_hosts.items()):
+            if auto_mode:
+                selected_label = "auto"
+                selected_addresses: List[str] = []
+                for dns_label, dns_servers in resolvers:
+                    addresses = resolve_aaaa_records(
+                        hostname,
+                        dns_servers=dns_servers,
+                    )
+                    if addresses:
+                        selected_label = f"auto -> {dns_label}"
+                        selected_addresses = addresses
+                        raw_hosts_with_v6.add(hostname)
+                        break
+                rows.append(
+                    {
+                        "host": hostname,
+                        "file_count": len(paths),
+                        "dns": selected_label,
+                        "status": "v6" if selected_addresses else "no-v6",
+                        "addresses": selected_addresses,
+                        "error": "",
+                    }
+                )
+                continue
+
+            for dns_label, dns_servers in resolvers:
+                addresses = resolve_aaaa_records(
+                    hostname,
+                    dns_servers=dns_servers,
+                )
+                if addresses:
+                    raw_hosts_with_v6.add(hostname)
+                rows.append(
+                    {
+                        "host": hostname,
+                        "file_count": len(paths),
+                        "dns": dns_label,
+                        "status": "v6" if addresses else "no-v6",
+                        "addresses": addresses,
+                        "error": "",
+                    }
+                )
+
+        for invalid in invalid_raw_files:
+            rows.append(
+                {
+                    "host": "",
+                    "file_count": 1,
+                    "dns": "",
+                    "status": "error",
+                    "addresses": [],
+                    "error": invalid["error"],
+                }
+            )
+
+        raw_files_with_v6 = {
+            path for host in raw_hosts_with_v6 for path in raw_hosts.get(host, [])
+        }
+
+        summary_table = Table(
+            title="raw_url 域名聚合",
+            box=box.ROUNDED,
+            header_style="bold white",
+            title_style="bold cyan",
+            expand=True,
+        )
+        summary_table.add_column("#", justify="right", style="dim", no_wrap=True)
+        summary_table.add_column("raw域名", overflow="fold", ratio=3)
+        summary_table.add_column("文件数", justify="right", no_wrap=True)
+
+        for hostname, paths in sorted(raw_hosts.items()):
+            summary_table.add_row(
+                str(len(summary_table.rows) + 1),
+                hostname,
+                str(len(paths)),
+            )
+
+        for _invalid in invalid_raw_files:
+            summary_table.add_row(
+                str(len(summary_table.rows) + 1),
+                Text("raw_url 缺少域名", style="bold red"),
+                "1",
+            )
+
+        table = Table(
+            title="raw_url AAAA 解析测试",
+            box=box.ROUNDED,
+            header_style="bold white",
+            title_style="bold cyan",
+            expand=True,
+        )
+        table.add_column("#", justify="right", style="dim", no_wrap=True)
+        table.add_column("状态", no_wrap=True)
+        table.add_column("raw域名", overflow="fold", ratio=2)
+        table.add_column("文件数", justify="right", no_wrap=True)
+        table.add_column("DNS", overflow="fold", ratio=2)
+        table.add_column("AAAA地址", overflow="fold", ratio=3)
+
+        for row in rows:
+            status = str(row["status"])
+            if status == "v6":
+                status_text = Text("有IPv6", style="bold green")
+                addresses = "\n".join(row["addresses"])
+            elif status == "no-v6":
+                status_text = Text("无IPv6", style="bold red")
+                addresses = "-"
+            else:
+                status_text = Text("错误", style="bold red")
+                addresses = str(row.get("error", ""))
+            table.add_row(
+                str(len(table.rows) + 1),
+                status_text,
+                str(row["host"]),
+                str(row["file_count"]),
+                str(row["dns"]),
+                addresses,
+            )
+
+        console = Console(highlight=False)
+        if not raw_files:
+            console.print("[yellow]计划中没有 raw_url 文件。[/yellow]")
+        else:
+            console.print(summary_table)
+            console.print(table)
+
+        summary = {
+            "raw_files": len(raw_files),
+            "raw_hosts": len(raw_hosts),
+            "resolvers": len(resolvers),
+            "checks": len(rows),
+            "raw_files_with_v6": len(raw_files_with_v6),
+            "raw_hosts_with_v6": len(raw_hosts_with_v6),
+        }
+        logger.info(
+            "DNS测试结果: raw_files={raw_files}, raw_hosts={raw_hosts}, resolvers={resolvers}, checks={checks}, raw_files_with_v6={raw_files_with_v6}, raw_hosts_with_v6={raw_hosts_with_v6}".format(
+                **summary
+            )
+        )
+        return summary
+
     def download_from_plan(
         self,
         plan_path: str,
@@ -96,8 +315,8 @@ class ModelScopeDownloader:
         overwrite: bool = False,
         skip_existing: bool = True,
         timeout: int = 60,
-        only_raw: bool = False,
-        only_no_raw: bool = False,
+        allow_raw_direct: bool = False,
+        raw_dns: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         根据计划文件下载所有条目。
@@ -109,8 +328,8 @@ class ModelScopeDownloader:
             overwrite: 是否覆盖已存在文件
             skip_existing: 已存在文件是否跳过（当 overwrite=False 时生效）
             timeout: HTTP 请求超时秒数
-            only_raw: 仅下载带 raw_url 的文件
-            only_no_raw: 仅下载不带 raw_url 的文件
+            allow_raw_direct: 允许 raw_url 跳过 AAAA/IPv6 强制检查直接下载
+            raw_dns: raw_url 域名 AAAA 解析使用的 DNS
 
         Returns:
             下载结果统计信息字典
@@ -122,20 +341,6 @@ class ModelScopeDownloader:
         files: List[PlanFile] = plan.get("files", [])  # type: ignore[assignment]
         if not isinstance(files, list):
             raise ValueError("计划文件不合法：缺少 files")
-
-        # 默认策略：未指定时仅下载带 raw_url 的条目
-        if not only_raw and not only_no_raw:
-            only_raw = True
-
-        # 策略互斥校验
-        if only_raw and only_no_raw:
-            raise ValueError("参数冲突：--only-raw 与 --only-no-raw 不能同时使用")
-
-        # 按策略过滤
-        if only_raw:
-            files = [f for f in files if f.get("raw_url")]
-        elif only_no_raw:
-            files = [f for f in files if not f.get("raw_url")]
 
         # 根据大小从小到大排序；未知大小（None 或缺失）排后
         def _size_key(f: PlanFile):
@@ -149,14 +354,149 @@ class ModelScopeDownloader:
 
         files = sorted(files, key=_size_key)
 
-        root_dir = os.path.abspath(local_dir)
-        os.makedirs(root_dir, exist_ok=True)
+        raw_dns_label, raw_dns_servers = normalize_raw_dns(raw_dns)
+        auto_raw_dns_resolvers = expand_raw_dns_resolvers(["auto"])
+        dns_lock = Lock()
+        raw_host_aaaa_cache: Dict[str, tuple] = {}
+        raw_session_cache: Dict[str, httpx.Client] = {}
+
+        def _get_raw_host_aaaa(hostname: str) -> tuple:
+            with dns_lock:
+                cached = raw_host_aaaa_cache.get(hostname)
+            if cached is not None:
+                return cached
+
+            if raw_dns_label == "auto":
+                selected_label = "auto"
+                records: List[str] = []
+                for dns_label, dns_servers in auto_raw_dns_resolvers:
+                    records = resolve_aaaa_records(
+                        hostname,
+                        dns_servers=dns_servers,
+                    )
+                    if records:
+                        selected_label = dns_label
+                        break
+            else:
+                selected_label = raw_dns_label
+                records = resolve_aaaa_records(hostname, dns_servers=raw_dns_servers)
+
+            result = (selected_label, records)
+            with dns_lock:
+                raw_host_aaaa_cache[hostname] = result
+            return result
+
+        if allow_raw_direct:
+            logger.warning(
+                "\n"
+                "================ RAW DIRECT DOWNLOAD WARNING ================\n"
+                "你已启用 raw 直接下载，raw_url 将跳过 AAAA 记录检查。\n"
+                "这不再保证 raw 文件下载链路使用 IPv6。\n"
+                "============================================================="
+            )
+
+        def _get_raw_ipv6_session(hostname: str, addresses: List[str]) -> httpx.Client:
+            key = hostname.lower()
+            with dns_lock:
+                cached = raw_session_cache.get(key)
+            if cached is not None:
+                return cached
+
+            session = create_forced_ipv6_session(
+                {hostname: addresses}, on_connect=self._log_family, record_last=True
+            )
+            with dns_lock:
+                raw_session_cache[key] = session
+            return session
+
+        def _mark_processed(item: PlanFile) -> None:
+            if overall_mode == "count":
+                if sequential:
+                    overall_bar.update(1)
+                else:
+                    with lock:
+                        overall_bar.update(1)
+            elif overall_mode == "bytes" and isinstance(item.get("size"), int):
+                if sequential:
+                    overall_bar.update(int(item["size"]))
+                else:
+                    with lock:
+                        overall_bar.update(int(item["size"]))
+
+        def _network_stack_from_family(family: Optional[int]) -> str:
+            if family == socket.AF_INET6:
+                return "IPv6"
+            if family == socket.AF_INET:
+                return "IPv4"
+            return "unknown"
+
+        def _log_download_report(report: List[Dict[str, Any]]) -> None:
+            from rich import box
+            from rich.console import Console
+            from rich.table import Table
+            from rich.text import Text
+
+            status_styles = {
+                "ok": "bold green",
+                "skipped": "bold yellow",
+                "raw-no-aaaa": "bold red",
+                "size-mismatch": "bold red",
+                "hash-mismatch": "bold red",
+                "error": "bold red",
+            }
+            stack_styles = {
+                "IPv6": "bold cyan",
+                "IPv4": "bold magenta",
+                "raw-direct": "bold yellow",
+                "IPv4/system": "magenta",
+                "not-connected": "dim",
+                "unknown": "dim",
+            }
+
+            table = Table(
+                title="下载明细",
+                box=box.ROUNDED,
+                header_style="bold white",
+                title_style="bold cyan",
+                show_lines=False,
+                expand=True,
+            )
+            table.add_column("#", style="dim", justify="right", no_wrap=True)
+            table.add_column("状态", no_wrap=True)
+            table.add_column("文件", overflow="fold", ratio=3)
+            table.add_column("来源", style="blue", no_wrap=True)
+            table.add_column("预期网络", no_wrap=True)
+            table.add_column("实际网络", no_wrap=True)
+            table.add_column("错误", overflow="fold", ratio=2)
+
+            for item in sorted(report, key=lambda x: x.get("path", "")):
+                index = str(len(table.rows) + 1)
+                status = str(item.get("status", ""))
+                expected_stack = str(item.get("expected_stack", ""))
+                actual_stack = str(item.get("actual_stack", "unknown"))
+                table.add_row(
+                    index,
+                    Text(status, style=status_styles.get(status, "white")),
+                    str(item.get("path", "")),
+                    str(item.get("source", "")),
+                    Text(
+                        expected_stack,
+                        style=stack_styles.get(expected_stack, "white"),
+                    ),
+                    Text(actual_stack, style=stack_styles.get(actual_stack, "white")),
+                    Text(str(item.get("error", "")), style="red"),
+                )
+
+            Console(highlight=False).print(table)
 
         total = len(files)
         success = 0
         skipped = 0
         failed = 0
         results: List[Dict[str, Any]] = []
+
+        root_dir = os.path.abspath(local_dir)
+        os.makedirs(root_dir, exist_ok=True)
 
         # 进度条设置
         all_have_sizes = total > 0 and all(
@@ -176,10 +516,6 @@ class ModelScopeDownloader:
         lock = Lock()
 
         def _download_one(item: PlanFile) -> Dict[str, Any]:
-            # 确保会话已创建（仅下载阶段构建）
-            self._ensure_session()
-            # 优先使用 raw_url（通常指向支持 IPv6 的 CDN 直链）
-            url = item.get("raw_url") or item["url"]
             rel_path = item["path"]  # 相对路径
             target = os.path.join(root_dir, rel_path)
             os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -187,23 +523,26 @@ class ModelScopeDownloader:
             # 已存在处理
             if os.path.exists(target) and not overwrite:
                 if skip_existing:
-                    # 跳过时更新总进度
-                    if overall_mode == "count":
-                        if sequential:
-                            overall_bar.update(1)
-                        else:
-                            with lock:
-                                overall_bar.update(1)
-                    elif overall_mode == "bytes" and isinstance(item.get("size"), int):
-                        size_delta = int(item["size"])  # 仅在已知大小时更新
-                        if sequential:
-                            overall_bar.update(size_delta)
-                        else:
-                            with lock:
-                                overall_bar.update(size_delta)
+                    _mark_processed(item)
                     # 显示当前文件
-                    logger.info("跳过: {} (已存在)", rel_path)
-                    return {"path": rel_path, "status": "skipped"}
+                    source = "raw_url" if item.get("raw_url") else "url"
+                    if item.get("raw_url"):
+                        expected_stack = "raw-direct" if allow_raw_direct else "IPv6"
+                    else:
+                        expected_stack = "IPv4/system"
+                    logger.info(
+                        "跳过: {} (已存在, source={}, expected_stack={})",
+                        rel_path,
+                        source,
+                        expected_stack,
+                    )
+                    return {
+                        "path": rel_path,
+                        "status": "skipped",
+                        "source": source,
+                        "expected_stack": expected_stack,
+                        "actual_stack": "not-connected",
+                    }
 
             # 当前文件进度条（仅顺序下载时展示）
             file_bar = None
@@ -221,11 +560,83 @@ class ModelScopeDownloader:
                         leave=False,
                     )
 
+                raw_url = item.get("raw_url")
+                is_raw = bool(raw_url)
+                if is_raw:
+                    url = str(raw_url)
+                    source = "raw_url"
+                    parsed = urlparse(url)
+                    hostname = parsed.hostname
+                    if not hostname:
+                        _mark_processed(item)
+                        logger.error("失败: {} -> raw_url 缺少域名", rel_path)
+                        return {
+                            "path": rel_path,
+                            "status": "error",
+                            "source": source,
+                            "expected_stack": "IPv6",
+                            "actual_stack": "not-connected",
+                            "error": "raw_url 缺少域名",
+                        }
+                    if allow_raw_direct:
+                        session = self._session
+                        self._ensure_session()
+                        expected_stack = "raw-direct"
+                        logger.info(
+                            "开始下载: {} (type=raw, source=raw_url, dns=bypassed, expected_stack=raw-direct)",
+                            rel_path,
+                        )
+                    else:
+                        selected_dns_label, addresses = _get_raw_host_aaaa(hostname)
+                        if not addresses:
+                            _mark_processed(item)
+                            error = (
+                                "raw_url 域名缺少AAAA记录: "
+                                f"host={hostname}, dns={selected_dns_label}"
+                            )
+                            logger.error("失败: {} -> {}", rel_path, error)
+                            return {
+                                "path": rel_path,
+                                "status": "raw-no-aaaa",
+                                "source": source,
+                                "expected_stack": "IPv6",
+                                "actual_stack": "not-connected",
+                                "error": error,
+                            }
+                        logger.debug(
+                            "raw_url AAAA记录: host={} dns={} addresses={}",
+                            hostname,
+                            selected_dns_label,
+                            ", ".join(addresses),
+                        )
+                        session = _get_raw_ipv6_session(hostname, addresses)
+                        expected_stack = "IPv6"
+                        logger.info(
+                            "开始下载: {} (type=raw, source=raw_url, dns={}, expected_stack=IPv6, addresses={})",
+                            rel_path,
+                            selected_dns_label,
+                            ",".join(addresses),
+                        )
+                else:
+                    url = item["url"]
+                    source = "url"
+                    session = self._session
+                    self._ensure_session()
+                    expected_stack = "IPv4/system"
+                    logger.info(
+                        "开始下载: {} (type=no-raw, source=url, dns=system, expected_stack={})",
+                        rel_path,
+                        expected_stack,
+                    )
+
+                actual_stack = "unknown"
+
                 # 提示开始下载的文件（并发/顺序均可见）
                 logger.info(
-                    "开始下载: {} ({})",
+                    "下载网络策略: file={} source={} expected_stack={}",
                     rel_path,
-                    "raw" if item.get("raw_url") else "origin",
+                    source,
+                    expected_stack,
                 )
 
                 expected_size = item.get("size")
@@ -233,21 +644,26 @@ class ModelScopeDownloader:
                 hasher = hashlib.sha256() if isinstance(expected_sha, str) else None
                 bytes_written = 0
 
-                with self._session.stream("GET", url, timeout=timeout) as r:
+                # 确保会话已创建（仅下载阶段构建）
+                with session.stream("GET", url, timeout=timeout) as r:
                     r.raise_for_status()
 
                     # 在请求建立后输出当前连接信息
                     try:
-                        transport = getattr(self._session, "_transport", None)
+                        transport = getattr(session, "_transport", None)
                         fam = getattr(transport, "last_socket_family", None)
                         peer = getattr(transport, "last_sockaddr", None)
-                        fam_str = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}.get(
-                            fam, str(fam)
-                        )
+                        fam_str = _network_stack_from_family(fam)
+                        actual_stack = fam_str
                         if fam is None:
                             logger.debug("当前连接: 无记录")
                         else:
-                            logger.debug("当前连接: family={} peer={}", fam_str, peer)
+                            logger.info(
+                                "当前连接: file={} actual_stack={} peer={}",
+                                rel_path,
+                                fam_str,
+                                peer,
+                            )
                     except Exception:
                         # 记录失败不影响下载
                         pass
@@ -280,7 +696,13 @@ class ModelScopeDownloader:
                             except Exception:
                                 pass
                             logger.error("大小校验失败: {}", rel_path)
-                            return {"path": rel_path, "status": "size-mismatch"}
+                            return {
+                                "path": rel_path,
+                                "status": "size-mismatch",
+                                "source": source,
+                                "expected_stack": expected_stack,
+                                "actual_stack": actual_stack,
+                            }
                     except Exception:  # noqa: BLE001
                         pass
 
@@ -296,7 +718,13 @@ class ModelScopeDownloader:
                         except Exception:
                             pass
                         logger.error("校验失败(sha256): {}", rel_path)
-                        return {"path": rel_path, "status": "hash-mismatch"}
+                        return {
+                            "path": rel_path,
+                            "status": "hash-mismatch",
+                            "source": source,
+                            "expected_stack": expected_stack,
+                            "actual_stack": actual_stack,
+                        }
 
                 os.replace(tmp_path, target)
 
@@ -308,8 +736,14 @@ class ModelScopeDownloader:
                         with lock:
                             overall_bar.update(1)
                 # 提示完成
-                logger.success("完成: {}", rel_path)
-                return {"path": rel_path, "status": "ok"}
+                logger.success("完成: {} (actual_stack={})", rel_path, actual_stack)
+                return {
+                    "path": rel_path,
+                    "status": "ok",
+                    "source": source,
+                    "expected_stack": expected_stack,
+                    "actual_stack": actual_stack,
+                }
             except Exception as e:  # noqa: BLE001
                 # 清理临时文件
                 try:
@@ -318,7 +752,14 @@ class ModelScopeDownloader:
                 except Exception:  # noqa: BLE001
                     pass
                 logger.error("失败: {} -> {}", rel_path, e)
-                return {"path": rel_path, "status": "error", "error": str(e)}
+                return {
+                    "path": rel_path,
+                    "status": "error",
+                    "source": locals().get("source", "unknown"),
+                    "expected_stack": locals().get("expected_stack", "unknown"),
+                    "actual_stack": locals().get("actual_stack", "unknown"),
+                    "error": str(e),
+                }
             finally:
                 if file_bar is not None:
                     file_bar.close()
@@ -334,6 +775,7 @@ class ModelScopeDownloader:
                     results.append(res)
 
         overall_bar.close()
+        _log_download_report(results)
 
         for r in results:
             if r["status"] == "ok":

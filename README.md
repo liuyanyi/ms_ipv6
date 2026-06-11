@@ -75,16 +75,32 @@ ms-ipv6 download my_plan.json --local-dir ./downloads/ --timeout 120
   - 注意：未安装可选依赖 `plan` 将无法执行 `plan` 子命令
 
 - 执行下载：
-  - 用法：`ms-ipv6 download <plan.json> --local-dir <DIR> [--ipv6] [--workers N] [--overwrite] [--no-skip-existing] [--only-raw | --only-no-raw] [--timeout SEC] [-v]`
+  - 用法：`ms-ipv6 download <plan.json> --local-dir <DIR> [--workers N] [--overwrite] [--no-skip-existing] [--allow-raw-direct] [--raw-dns DNS] [--timeout SEC] [-v]`
   - 说明：
     - `plan.json` 为位置参数
+    - 默认处理计划中的全部文件，不再区分 only-raw / only-no-raw
+    - 已存在文件默认跳过
+    - 无 `raw_url` 的文件直接下载，使用普通 IPv4 下载路径
+    - 有 `raw_url` 的文件默认检查 raw 域名 AAAA，并强制连接到解析出的 IPv6 地址下载
+    - `--raw-dns` 仅用于 raw 域名 AAAA 解析，支持 `auto`、`system`、`aliyun`、`tencent`、`cloudflare`、`google`、`quad9` 或自定义 DNS 地址，默认 `auto`
+    - `auto` 会按阿里云、腾讯云、Cloudflare、Google、Quad9 的内置 DNS 地址顺序遍历，遇到第一个能解析 AAAA 的 DNS 后停止
+    - `--allow-raw-direct` 会跳过 raw 域名 AAAA 检查和 IPv6 强制，直接下载 raw_url；启用时会在下载前输出醒目警告
     - `--overwrite` 优先于 `--no-skip-existing`
-    - `--only-raw` 与 `--only-no-raw` 二选一，不建议同时使用
+
+- DNS 测试：
+  - 用法：`ms-ipv6 test <plan.json> [--raw-dns DNS ...] [-v]`
+  - 说明：
+    - 只读取计划中的 `raw_url` 文件，只做 AAAA 解析测试，不下载文件
+    - 会先按 raw 域名聚合，同一个域名只对每个 DNS 解析一次
+    - 未指定 `--raw-dns` 时，会测试 `aliyun`、`tencent`、`cloudflare`、`google`、`quad9`、`system`
+    - `--raw-dns` 可多次使用，也支持逗号分隔；可填内置名称或自定义 DNS 地址
+    - `--raw-dns auto` 会按内置 DNS 顺序自动遍历到第一个能解析 AAAA 的 DNS
+    - 输出 Rich 表格，展示 raw 域名、文件数量、DNS 和解析到的 IPv6 地址
 
 ### 设计说明（为何仅下载阶段支持 IPv6）
 
 - 计划生成（plan）阶段依赖 ModelScope 主站 API/SDK，当前不支持 IPv6 直连
-- 下载（download）阶段由本工具自行发起 HTTP 请求，提供 IPv6 能力（`--ipv6`）
+- 下载（download）阶段由本工具自行发起 HTTP 请求：no-raw 文件走普通下载路径，raw 文件默认走 IPv6 强制下载路径
 
 ## 示例场景
 
@@ -106,13 +122,21 @@ IPv6 环境推荐：
 
 ```bash
 ms-ipv6 plan model user/model
-ms-ipv6 download --ipv6 model__user__model.json --local-dir ./downloads/ --only-raw -v
+ms-ipv6 test model__user__model.json --raw-dns auto
+ms-ipv6 download model__user__model.json --local-dir ./downloads/ --raw-dns auto -v
+```
+
+raw 域名没有 AAAA、但你明确接受直接下载时：
+
+```bash
+ms-ipv6 download model__user__model.json --local-dir ./downloads/ --allow-raw-direct -v
 ```
 
 ## 故障排查
 
-- 无法连通 IPv6：确认本机/网络具备 IPv6 出口；可尝试去掉 `--ipv6` 或仅测试 `--only-raw`
-- 下载很慢/超时：适度调大 `--timeout`，增加 `--workers`，或关闭 `--only-raw`
+- raw 域名缺少 AAAA：默认会通过 `--raw-dns auto` 遍历内置 DNS；仍失败时可指定自定义 DNS，或在明确接受时添加 `--allow-raw-direct`
+- 无法连通 IPv6：确认本机/网络具备 IPv6 出口；raw 文件默认强制 IPv6
+- 下载很慢/超时：适度调大 `--timeout`，增加 `--workers`，或更换 `--raw-dns`
 - 403/权限问题：确认目标仓库权限或登录要求
 - 文件已存在：默认跳过；如需覆盖，添加 `--overwrite`
 
