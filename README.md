@@ -1,189 +1,182 @@
 # ModelScope IPv6 Download Assistant
 
-简洁、稳定的 ModelScope 下载助手，专为 IPv6 网络环境优化，采用“两阶段”下载流程，支持并发与续传。
+面向 Windows 和 Linux 的 ModelScope 下载助手。先生成下载计划，再按计划下载；CDN 直链默认强制走 IPv6，其余文件使用普通 IPv4 下载路径。
 
-## 亮点特性
+- 自动识别模型和数据集，也可手动指定类型。
+- 使用轻量 `modelscope-hub` 客户端，无需安装完整 ModelScope SDK。
+- 支持文件通配过滤、并发下载、已有文件跳过和覆盖。
+- 提供 raw 域名 AAAA 解析测试与连接日志。
+- 文件元数据可用时，下载完成后校验大小和 SHA-256。
 
-- 两阶段下载：先生成“计划”，再按计划高效下载
-- IPv6 优化：可在下载阶段强制仅走 IPv6
-- 并发与续传：多线程下载、跳过已存在或强制覆盖
-- 灵活过滤：按通配符仅下载需要的文件
-- 统一日志：进度条与彩色日志和谐共存
+版本变化见 [更新日志](CHANGELOG.md)。
 
 ## 安装
 
+需要 **Python 3.10+**。在仓库根目录执行：
+
 ```bash
-# 生产环境（不包含 plan 依赖）
-pip install .
-
-# 开发环境（不包含 plan 依赖）
-pip install -e ".[dev]"
-
-# 如需使用 plan 子命令，请额外安装可选的 plan 依赖：
-pip install -e ".[plan]"          # 仅 plan 依赖
-pip install -e ".[dev,plan]"      # 开发依赖 + plan 依赖
+python -m pip install .
 ```
+
+计划生成功能已包含在主依赖中，无需选择 `[plan]` extra。下列单行命令均可在 Windows PowerShell 和 Linux 终端执行。
 
 ## 快速开始
 
-1) 生成下载计划（plan）
-
 ```bash
-# 模型
-ms-ipv6 plan model Qwen/Qwen2-7B-Instruct
+# 生成计划，自动识别仓库类型
+ms-ipv6 plan Qwen/Qwen3-0.6B
 
-# 数据集
-ms-ipv6 plan dataset AI-MO/NuminaMath-1.5
+# 检查 CDN 直链域名的 IPv6 解析
+ms-ipv6 test model__Qwen__Qwen3-0.6B.json --raw-dns auto
 
-# 可选：指定输出 / 过滤 / token
-ms-ipv6 plan model user/model \
-  --output my_plan.json \
-  --token $MODELSCOPE_API_TOKEN \
-  --allow-pattern "*.safetensors" \
-  --ignore-pattern "*.tmp"
+# 按计划下载
+ms-ipv6 download model__Qwen__Qwen3-0.6B.json --local-dir ./downloads/Qwen3-0.6B -v
 ```
 
-计划文件默认命名为：`{repo_type}__{repo_id}.json`，其中 `/` 会替换为 `__`。
-
-2) 根据计划执行下载（download）
+数据集使用相同流程：
 
 ```bash
-# 基本下载（plan 为位置参数）
-ms-ipv6 download model__Qwen__Qwen2-7B-Instruct.json --local-dir ./models/
-
-# 并发与覆盖控制
-ms-ipv6 download my_plan.json --local-dir ./downloads/ --workers 8 --overwrite
-
-# 超时设置（秒）
-ms-ipv6 download my_plan.json --local-dir ./downloads/ --timeout 120
+ms-ipv6 plan tencent-community/CL-bench
+ms-ipv6 download dataset__tencent-community__CL-bench.json --local-dir ./downloads/CL-bench
 ```
 
-## CLI 参考
+计划默认命名为 `{repo_type}__{repo_id}.json`，仓库 ID 中的 `/` 替换为 `__`。也可通过 `--output` 指定输出文件。
 
-提示：所有“全局选项”必须放在子命令之后使用。
+## 生成计划
 
-- 全局：
-  - `--verbose, -v` 开启详细日志
-  - `--version` 或子命令 `version` 显示版本
+```text
+ms-ipv6 plan [auto|model|dataset] <repo_id> [选项]
+```
 
-- 生成计划：
-  - 用法：`ms-ipv6 plan [model|dataset] <repo_id> [--output <file>] [--token <TOKEN>] [--allow-pattern PATTERN ...] [--ignore-pattern PATTERN ...] [-v]`
-  - 说明：
-    - `repo_id` 形如 `user/repo`
-    - 默认输出：`{repo_type}__{repo_id}.json`
-    - `--token` 可选，未提供时将从环境变量 `MODELSCOPE_API_TOKEN` 读取（当前版本暂未实际使用）
-  - 注意：未安装可选依赖 `plan` 将无法执行 `plan` 子命令
+省略类型时，分别查询模型和数据集元数据。只有一种类型可访问时自动选定；两种类型均可访问时，提示手动指定。仓库不存在或不可见时提示检查 ID、站点和权限；网络、认证或服务错误直接报错。
 
-- 执行下载：
-  - 用法：`ms-ipv6 download <plan.json> --local-dir <DIR> [--workers N] [--overwrite] [--no-skip-existing] [--allow-raw-direct] [--raw-dns DNS] [--timeout SEC] [-v]`
-  - 说明：
-    - `plan.json` 为位置参数
-    - 默认处理计划中的全部文件，不再区分 only-raw / only-no-raw
-    - 已存在文件默认跳过
-    - 无 `raw_url` 的文件直接下载，使用普通 IPv4 下载路径
-    - 有 `raw_url` 的文件默认检查 raw 域名 AAAA，并强制连接到解析出的 IPv6 地址下载
-    - `--raw-dns` 仅用于 raw 域名 AAAA 解析，支持 `auto`、`system`、`aliyun`、`tencent`、`cloudflare`、`google`、`quad9` 或自定义 DNS 地址，默认 `auto`
-    - `auto` 会按阿里云、腾讯云、Cloudflare、Google、Quad9 的内置 DNS 地址顺序遍历，遇到第一个能解析 AAAA 的 DNS 后停止
-    - `--allow-raw-direct` 会跳过 raw 域名 AAAA 检查和 IPv6 强制，直接下载 raw_url；启用时会在下载前输出醒目警告
-    - `--overwrite` 优先于 `--no-skip-existing`
-
-- DNS 测试：
-  - 用法：`ms-ipv6 test <plan.json> [--raw-dns DNS ...] [-v]`
-  - 说明：
-    - 只读取计划中的 `raw_url` 文件，只做 AAAA 解析测试，不下载文件
-    - 会先按 raw 域名聚合，同一个域名只对每个 DNS 解析一次
-    - 未指定 `--raw-dns` 时，会测试 `aliyun`、`tencent`、`cloudflare`、`google`、`quad9`、`system`
-    - `--raw-dns` 可多次使用，也支持逗号分隔；可填内置名称或自定义 DNS 地址
-    - `--raw-dns auto` 会按内置 DNS 顺序自动遍历到第一个能解析 AAAA 的 DNS
-    - 输出 Rich 表格，展示 raw 域名、文件数量、DNS 和解析到的 IPv6 地址
-
-### 设计说明（为何仅下载阶段支持 IPv6）
-
-- 计划生成（plan）阶段依赖 ModelScope 主站 API/SDK，当前不支持 IPv6 直连
-- 下载（download）阶段由本工具自行发起 HTTP 请求：no-raw 文件走普通下载路径，raw 文件默认走 IPv6 强制下载路径
-
-## 示例场景
-
-下载完整模型：
+原有手动指定方式继续有效：
 
 ```bash
-ms-ipv6 plan model Qwen/Qwen2-7B-Instruct
-ms-ipv6 download model__Qwen__Qwen2-7B-Instruct.json --local-dir ./models/qwen2-7b/
+ms-ipv6 plan model Qwen/Qwen3-0.6B
+ms-ipv6 plan dataset tencent-community/CL-bench
 ```
 
-仅下载权重：
+| 选项 | 说明 |
+| --- | --- |
+| `--output FILE` | 指定计划输出路径 |
+| `--allow-pattern PATTERN` | 只保留匹配的文件，可重复指定 |
+| `--ignore-pattern PATTERN` | 排除匹配的文件，可重复指定，优先于允许规则 |
+| `--token TOKEN` | 显式指定 ModelScope token |
+| `-v, --verbose` | 输出详细日志 |
+
+过滤规则区分大小写，按远端仓库的 `/` 路径匹配。目录模式可写为 `weights/`，文件模式可写为 `*.safetensors`：
 
 ```bash
-ms-ipv6 plan model user/model --allow-pattern "*.safetensors" --allow-pattern "*.bin"
-ms-ipv6 download model__user__model.json --local-dir ./weights/
+ms-ipv6 plan Qwen/Qwen3-0.6B --allow-pattern "*.safetensors" --ignore-pattern "*.tmp" --output weights.json
 ```
 
-IPv6 环境推荐：
+认证优先级为：`--token`、环境变量 `MODELSCOPE_API_TOKEN`、Hub 客户端保存的凭据。公开仓库无需登录。可通过 `MODELSCOPE_ENDPOINT` 指定站点，例如 `https://modelscope.cn` 或 `https://modelscope.ai`。
+
+Token 用于仓库查询和直链探测，不写入计划文件。后续下载需要认证且没有可用直链的文件时，仍受仓库权限限制。
+
+## 执行下载
+
+```text
+ms-ipv6 download <plan.json> --local-dir <DIR> [选项]
+```
+
+| 选项 | 说明 |
+| --- | --- |
+| `--local-dir DIR` | 下载根目录，必填 |
+| `--workers N` | 并发数，默认 `4` |
+| `--timeout SEC` | HTTP 超时秒数，默认 `60` |
+| `--overwrite` | 重新下载已有目标文件，完成后替换 |
+| `--no-skip-existing` | 关闭已有文件跳过；同时指定时以 `--overwrite` 为准 |
+| `--raw-dns DNS` | raw 域名的 AAAA 解析方式，默认 `auto` |
+| `--allow-raw-direct` | 直接下载 raw URL，跳过 AAAA 检查和 IPv6 强制 |
+| `-v, --verbose` | 输出详细日志 |
+
+重新执行时默认跳过已有目标文件；未完成文件从头下载。下载内容先写入 `.part` 临时文件，校验通过后替换目标文件。
 
 ```bash
-ms-ipv6 plan model user/model
-ms-ipv6 test model__user__model.json --raw-dns auto
-ms-ipv6 download model__user__model.json --local-dir ./downloads/ --raw-dns auto -v
+ms-ipv6 download weights.json --local-dir ./weights --workers 8 --timeout 120
+ms-ipv6 download weights.json --local-dir ./weights --overwrite
 ```
 
-raw 域名没有 AAAA、但你明确接受直接下载时：
+## IPv6 与 DNS
+
+计划生成阶段通过主站 API 查询元数据和探测直链，按常规网络配置连接。下载阶段根据计划中的文件信息选择路径：
+
+| 文件信息 | 默认下载方式 |
+| --- | --- |
+| 有 `raw_url` | 检查 raw 域名 AAAA，强制连接解析出的 IPv6 地址 |
+| 无 `raw_url` | 使用原始 API URL，通过普通 IPv4 路径下载 |
+
+`--raw-dns` 支持 `auto`、`system`、`aliyun`、`tencent`、`cloudflare`、`google`、`quad9` 和自定义 DNS 地址。`auto` 按阿里云、腾讯云、Cloudflare、Google、Quad9 的内置地址顺序探测，找到第一个可返回 AAAA 的 DNS 后停止。
+
+`test` 子命令只检查 raw 域名解析，不下载文件。默认测试所有内置 DNS 和系统解析；相同域名会合并处理：
 
 ```bash
-ms-ipv6 download model__user__model.json --local-dir ./downloads/ --allow-raw-direct -v
+ms-ipv6 test weights.json
+ms-ipv6 test weights.json --raw-dns auto
+ms-ipv6 test weights.json --raw-dns aliyun --raw-dns system
 ```
 
-## 故障排查
-
-- raw 域名缺少 AAAA：默认会通过 `--raw-dns auto` 遍历内置 DNS；仍失败时可指定自定义 DNS，或在明确接受时添加 `--allow-raw-direct`
-- 无法连通 IPv6：确认本机/网络具备 IPv6 出口；raw 文件默认强制 IPv6
-- 下载很慢/超时：适度调大 `--timeout`，增加 `--workers`，或更换 `--raw-dns`
-- 403/权限问题：确认目标仓库权限或登录要求
-- 文件已存在：默认跳过；如需覆盖，添加 `--overwrite`
-
-## 开发
-
-环境要求：Python 3.8+（推荐 3.11），支持 IPv4/IPv6。
-
-安装开发依赖：
+如果接受使用 raw URL 直接连接，可显式开启：
 
 ```bash
-pip install -e ".[dev]"
+ms-ipv6 download weights.json --local-dir ./weights --allow-raw-direct
 ```
 
-质量与测试：
+该选项会在下载前输出提示，并解除 raw 文件的 IPv6 强制。
+
+## 常见问题
+
+| 情况 | 处理 |
+| --- | --- |
+| 自动识别提示类型歧义 | 使用 `plan model <repo_id>` 或 `plan dataset <repo_id>` |
+| 仓库不存在或不可见 | 核对 ID、站点、token 及仓库权限 |
+| raw 域名没有 AAAA | 尝试指定 DNS；接受直接连接时使用 `--allow-raw-direct` |
+| 解析成功但 IPv6 连接失败 | 检查本机 IPv6 出口，使用 `-v` 查看连接日志 |
+| 计划没有 raw URL | 该文件将使用原始 API URL 下载 |
+| 下载慢或超时 | 调整 `--workers`、`--timeout`，必要时更换 `--raw-dns` |
+| 已有文件被跳过 | 使用 `--overwrite` 重新下载 |
+
+查看完整参数或版本：
 
 ```bash
-ruff check . && ruff format .
-mypy ms_ipv6/
-pytest -q
+ms-ipv6 plan --help
+ms-ipv6 download --help
+ms-ipv6 test --help
+ms-ipv6 --version
 ```
+
+## 开发与发布
+
+使用 uv 安装锁定的开发环境并运行离线检查：
+
+```bash
+uv sync --extra dev --locked
+uv run --no-sync ruff check ms_ipv6 tests
+uv run --no-sync ruff format --check ms_ipv6 tests
+uv run --no-sync pytest -q -k "not test_ipv6_connection"
+```
+
+真实 IPv6 连通性需在具备 IPv6 出口的本机单独验证，也可直接运行完整测试：
+
+```bash
+uv run --no-sync pytest -q
+```
+
+测试按独立行为选取代表性用例，覆盖计划生成、仓库识别、过滤、下载、DNS 和 CLI 错误处理。
+
+GitHub Actions 仅在推送 `v*` 标签或手动运行发布工作流时执行 Windows/Linux × Python 3.10/3.12 检查。所有检查通过后才会构建并发布到 PyPI，任一组失败都会阻止发布。普通提交和 PR 不触发 CI；发布检查不依赖公网 IPv6 连通性。
+
+本地构建与分发包检查：
+
+```bash
+uv build
+uv run --no-sync twine check dist/*
+```
+
+Bash 环境也可使用 `scripts/` 中的构建和上传脚本。正式发布前同步 `pyproject.toml` 与 `ms_ipv6/__init__.py` 的版本号，并将 [更新日志](CHANGELOG.md) 的“未发布”条目归入对应版本。
 
 ## 许可证
 
-MIT License
-
-## 开发：打包与上传到 PyPI
-
-本项目使用 PEP 517/518 风格打包。下面是常用脚本（位于 `scripts/`）：
-
-- `scripts/build.sh`: 清理先前构建并使用 `python -m build` 生成 `dist/` 下的 `sdist` 和 `wheel`。
-- `scripts/upload_pypi.sh`: 使用 `twine` 将 `dist/*` 上传到 PyPI。支持通过环境变量 `TWINE_REPOSITORY_URL` 指定自定义仓库。
-- `scripts/release.sh`: 先执行构建，然后可选择上传（可传 `--repository-url` 或 `--skip-upload`）。
-
-快速使用：
-
-```bash
-# 安装开发依赖（包含 build, twine）
-pip install -e ".[dev]"
-
-# 构建分发包
-./scripts/build.sh
-
-# 上传到 PyPI（或配置 ~/.pypirc），或使用环境变量：
-TWINE_USERNAME=__token__ TWINE_PASSWORD=$PYPI_API_TOKEN ./scripts/upload_pypi.sh
-
-# 一步发布（可指定 --repository-url 或 --skip-upload）
-./scripts/release.sh --repository-url https://upload.pypi.org/legacy/
-```
-
-安全提示：建议使用 PyPI API 令牌（在 `TWINE_USERNAME` 中使用 `__token__`，在 `TWINE_PASSWORD` 中使用令牌），或配置安全的 `~/.pypirc` 文件。
+[MIT](LICENSE)

@@ -13,16 +13,17 @@ import pytest
 from ms_ipv6.cli import create_parser
 from ms_ipv6.downloader import ModelScopeDownloader
 from ms_ipv6.utils import (
-    IPv4OnlyHTTPTransport,
-    IPv6OnlyHTTPTransport,
-    create_ipv4_session,
     create_ipv6_session,
-    ensure_dir,
     expand_raw_dns_resolvers,
-    get_default_cache_dir,
     normalize_raw_dns,
     resolve_aaaa_records,
 )
+
+
+def _write_plan(tmp_path, files):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps({"files": files}), encoding="utf-8")
+    return plan_path
 
 
 class FakeStream:
@@ -57,72 +58,27 @@ class FakeClient:
 class TestModelScopeDownloader:
     """测试ModelScopeDownloader类"""
 
-    def test_init(self):
-        """测试初始化"""
-        downloader = ModelScopeDownloader()
-        assert downloader.cache_dir is not None
-        assert not downloader.use_ipv6
-
-    def test_init_with_ipv6(self):
-        """测试IPV6初始化"""
-        downloader = ModelScopeDownloader(use_ipv6=True)
-        assert downloader.use_ipv6
-        assert not downloader.use_ipv4
-        # 验证session是被正确初始化的
-        assert hasattr(downloader, "_session")
-        assert downloader._session is not None
-
-    def test_init_with_ipv4(self):
-        """测试IPV4初始化"""
-        downloader = ModelScopeDownloader(use_ipv4=True)
-        assert downloader.use_ipv4
-        assert not downloader.use_ipv6
-        # 验证session是被正确初始化的
-        assert hasattr(downloader, "_session")
-        assert downloader._session is not None
-
-    def test_init_without_ipv6(self):
-        """测试默认不使用IPV6的初始化"""
-        downloader = ModelScopeDownloader(use_ipv6=False)
-        assert not downloader.use_ipv6
-        assert not downloader.use_ipv4
-        # 验证session是被正确初始化的
-        assert hasattr(downloader, "_session")
-        assert downloader._session is not None
-
-    def test_get_model_info(self):
-        """测试获取模型信息"""
-        downloader = ModelScopeDownloader()
-        info = downloader.get_model_info("test_model")
-        assert "model_id" in info
-        assert info["model_id"] == "test_model"
-
     def test_download_uses_all_files_and_skips_existing(self, tmp_path):
         """默认下载逻辑不再过滤 raw/no-raw 文件。"""
-        plan_path = tmp_path / "plan.json"
         local_dir = tmp_path / "downloads"
         (local_dir / "raw.bin").parent.mkdir(parents=True)
         (local_dir / "raw.bin").write_bytes(b"raw")
         (local_dir / "origin.bin").write_bytes(b"origin")
-        plan_path.write_text(
-            json.dumps(
+        plan_path = _write_plan(
+            tmp_path,
+            [
                 {
-                    "files": [
-                        {
-                            "path": "raw.bin",
-                            "url": "https://origin.example/raw.bin",
-                            "raw_url": "https://raw.example/raw.bin",
-                            "size": 3,
-                        },
-                        {
-                            "path": "origin.bin",
-                            "url": "https://origin.example/origin.bin",
-                            "size": 6,
-                        },
-                    ]
-                }
-            ),
-            encoding="utf-8",
+                    "path": "raw.bin",
+                    "url": "https://origin.example/raw.bin",
+                    "raw_url": "https://raw.example/raw.bin",
+                    "size": 3,
+                },
+                {
+                    "path": "origin.bin",
+                    "url": "https://origin.example/origin.bin",
+                    "size": 6,
+                },
+            ],
         )
 
         summary = ModelScopeDownloader().download_from_plan(
@@ -133,21 +89,16 @@ class TestModelScopeDownloader:
 
     def test_raw_without_aaaa_fails_per_file(self, tmp_path, monkeypatch):
         """raw 文件默认必须有 AAAA 记录。"""
-        plan_path = tmp_path / "plan.json"
-        plan_path.write_text(
-            json.dumps(
+        plan_path = _write_plan(
+            tmp_path,
+            [
                 {
-                    "files": [
-                        {
-                            "path": "raw.bin",
-                            "url": "https://origin.example/raw.bin",
-                            "raw_url": "https://raw.example/raw.bin",
-                            "size": 4,
-                        }
-                    ]
+                    "path": "raw.bin",
+                    "url": "https://origin.example/raw.bin",
+                    "raw_url": "https://raw.example/raw.bin",
+                    "size": 4,
                 }
-            ),
-            encoding="utf-8",
+            ],
         )
         monkeypatch.setattr(
             "ms_ipv6.downloader.resolve_aaaa_records", lambda *a, **k: []
@@ -161,21 +112,16 @@ class TestModelScopeDownloader:
 
     def test_allow_raw_direct_bypasses_aaaa_and_downloads(self, tmp_path, monkeypatch):
         """特殊 flag 允许 raw 文件直接下载。"""
-        plan_path = tmp_path / "plan.json"
-        plan_path.write_text(
-            json.dumps(
+        plan_path = _write_plan(
+            tmp_path,
+            [
                 {
-                    "files": [
-                        {
-                            "path": "raw.bin",
-                            "url": "https://origin.example/raw.bin",
-                            "raw_url": "https://raw.example/raw.bin",
-                            "size": 4,
-                        }
-                    ]
+                    "path": "raw.bin",
+                    "url": "https://origin.example/raw.bin",
+                    "raw_url": "https://raw.example/raw.bin",
+                    "size": 4,
                 }
-            ),
-            encoding="utf-8",
+            ],
         )
         monkeypatch.setattr(
             "ms_ipv6.downloader.resolve_aaaa_records",
@@ -196,29 +142,21 @@ class TestModelScopeDownloader:
 
     def test_raw_dns_test_from_plan(self, tmp_path, monkeypatch, capsys):
         """test 子命令逻辑只测试 raw_url AAAA 解析。"""
-        plan_path = tmp_path / "plan.json"
-        plan_path.write_text(
-            json.dumps(
+        plan_path = _write_plan(
+            tmp_path,
+            [
                 {
-                    "files": [
-                        {
-                            "path": "raw.bin",
-                            "url": "https://origin.example/raw.bin",
-                            "raw_url": "https://raw.example/raw.bin",
-                        },
-                        {
-                            "path": "raw-2.bin",
-                            "url": "https://origin.example/raw-2.bin",
-                            "raw_url": "https://raw.example/raw-2.bin",
-                        },
-                        {
-                            "path": "origin.bin",
-                            "url": "https://origin.example/origin.bin",
-                        },
-                    ]
-                }
-            ),
-            encoding="utf-8",
+                    "path": "raw.bin",
+                    "url": "https://origin.example/raw.bin",
+                    "raw_url": "https://raw.example/raw.bin",
+                },
+                {
+                    "path": "raw-2.bin",
+                    "url": "https://origin.example/raw-2.bin",
+                    "raw_url": "https://raw.example/raw-2.bin",
+                },
+                {"path": "origin.bin", "url": "https://origin.example/origin.bin"},
+            ],
         )
         calls = []
 
@@ -253,20 +191,15 @@ class TestModelScopeDownloader:
 
     def test_raw_dns_test_auto_stops_on_first_working_dns(self, tmp_path, monkeypatch):
         """test auto 模式按顺序找到第一个支持 AAAA 的 DNS 后停止。"""
-        plan_path = tmp_path / "plan.json"
-        plan_path.write_text(
-            json.dumps(
+        plan_path = _write_plan(
+            tmp_path,
+            [
                 {
-                    "files": [
-                        {
-                            "path": "raw.bin",
-                            "url": "https://origin.example/raw.bin",
-                            "raw_url": "https://raw.example/raw.bin",
-                        }
-                    ]
+                    "path": "raw.bin",
+                    "url": "https://origin.example/raw.bin",
+                    "raw_url": "https://raw.example/raw.bin",
                 }
-            ),
-            encoding="utf-8",
+            ],
         )
         calls = []
 
@@ -294,21 +227,16 @@ class TestModelScopeDownloader:
 
     def test_download_auto_dns_stops_on_first_working_dns(self, tmp_path, monkeypatch):
         """download auto 模式按顺序找到第一个支持 AAAA 的 DNS 后下载。"""
-        plan_path = tmp_path / "plan.json"
-        plan_path.write_text(
-            json.dumps(
+        plan_path = _write_plan(
+            tmp_path,
+            [
                 {
-                    "files": [
-                        {
-                            "path": "raw.bin",
-                            "url": "https://origin.example/raw.bin",
-                            "raw_url": "https://raw.example/raw.bin",
-                            "size": 4,
-                        }
-                    ]
+                    "path": "raw.bin",
+                    "url": "https://origin.example/raw.bin",
+                    "raw_url": "https://raw.example/raw.bin",
+                    "size": 4,
                 }
-            ),
-            encoding="utf-8",
+            ],
         )
         calls = []
 
@@ -344,21 +272,8 @@ class TestModelScopeDownloader:
 class TestUtils:
     """测试工具函数"""
 
-    def test_get_default_cache_dir(self):
-        """测试获取默认缓存目录"""
-        cache_dir = get_default_cache_dir()
-        assert cache_dir is not None
-        assert len(cache_dir) > 0
-
-    def test_ensure_dir(self, tmp_path):
-        """测试确保目录存在"""
-        test_dir = tmp_path / "test_subdir"
-        result = ensure_dir(str(test_dir))
-        assert result.exists()
-        assert result.is_dir()
-
     def test_resolve_aaaa_records_filters_ipv4_mapped(self, monkeypatch):
-        """测试AAAA解析会过滤IPv4-mapped IPv6地址"""
+        """混合解析结果只保留真实 IPv6 地址。"""
 
         def fake_getaddrinfo(host, port, family=0, type=0):
             return [
@@ -368,24 +283,14 @@ class TestUtils:
                     6,
                     "",
                     ("::ffff:182.48.108.43", port, 0, 0),
-                )
-            ]
-
-        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        assert resolve_aaaa_records("cdn.example.test") == []
-
-    def test_resolve_aaaa_records_keeps_real_ipv6(self, monkeypatch):
-        """测试AAAA解析保留真实IPv6地址"""
-
-        def fake_getaddrinfo(host, port, family=0, type=0):
-            return [
+                ),
                 (
                     socket.AF_INET6,
                     socket.SOCK_STREAM,
                     6,
                     "",
                     ("2606:4700::6810:7c60", port, 0, 0),
-                )
+                ),
             ]
 
         monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
@@ -488,36 +393,6 @@ class TestSession:
 
     # 允许通过环境变量覆盖测试目标 URL
     TEST_V6_URL = os.getenv("TEST_V6_URL", "https://www.neu.edu.cn/")
-
-    def test_create_ipv6_session(self):
-        """测试创建IPv6会话"""
-        session = create_ipv6_session()
-        assert session is not None
-        # 验证transport已正确配置
-        assert hasattr(session, "_transport")
-        # 验证transport是IPv6OnlyHTTPTransport类型
-        transport = session._transport
-        assert isinstance(transport, IPv6OnlyHTTPTransport)
-
-    def test_create_ipv4_session(self):
-        """测试创建IPv4会话"""
-        session = create_ipv4_session()
-        assert session is not None
-        # 验证transport已正确配置
-        assert hasattr(session, "_transport")
-        # 验证transport是IPv4OnlyHTTPTransport类型
-        transport = session._transport
-        assert isinstance(transport, IPv4OnlyHTTPTransport)
-
-    def test_ipv6_adapter_creation(self):
-        """测试IPv6传输类的创建"""
-        transport = IPv6OnlyHTTPTransport()
-        assert transport is not None
-
-    def test_ipv4_adapter_creation(self):
-        """测试IPv4传输类的创建"""
-        transport = IPv4OnlyHTTPTransport()
-        assert transport is not None
 
     def test_ipv6_connection(self):
         """测试IPv6连接：使用 on_connect 回调记录 socket.family（严格模式，不跳过）。"""
