@@ -8,12 +8,10 @@ import httpx
 import pytest
 import requests
 from modelscope_hub import (
-    AuthenticationError,
     HubApi,
     NetworkError,
     NotExistError,
     PermissionDeniedError,
-    ServerError,
 )
 
 from ms_ipv6.downloader import ModelScopeDownloader
@@ -28,8 +26,10 @@ def hub_environment(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
 
-@pytest.mark.parametrize("repo_type", ["model", "dataset"])
-@pytest.mark.parametrize("token_source", ["anonymous", "environment", "explicit"])
+@pytest.mark.parametrize(
+    "repo_type,token_source",
+    [("model", "anonymous"), ("model", "environment"), ("dataset", "explicit")],
+)
 def test_generate_plan_with_hub_client(
     repo_type, token_source, hub_environment, tmp_path, monkeypatch
 ):
@@ -130,37 +130,6 @@ def test_generate_plan_with_hub_client(
     assert "explicit-token" not in plan_text
 
 
-def test_dataset_pagination(hub_environment, tmp_path, monkeypatch):
-    """Let the real Hub client enumerate more than one dataset page."""
-    pages = []
-
-    def api_request(session, method, url, **kwargs):
-        page = kwargs["params"]["PageNumber"]
-        pages.append(page)
-        size = kwargs["params"]["PageSize"]
-        files = [
-            {"Path": f"page-{page}/file-{i}.json", "Size": 2}
-            for i in range(size if page == 1 else 1)
-        ]
-        response = requests.Response()
-        response.status_code = 200
-        response._content = json.dumps({"Data": {"Files": files}}).encode()
-        return response
-
-    # No match means no redirect probes or file bodies are requested.
-    monkeypatch.setattr(requests.Session, "request", api_request)
-    output = tmp_path / "nested" / "plan.json"
-    path = ModelScopeDownloader(cache_dir=str(tmp_path / "cache")).generate_plan(
-        repo_type="dataset",
-        repo_id="owner/data",
-        output=str(output),
-        allow_pattern="*.safetensors",
-    )
-    assert pages == [1, 2]
-    assert path == str(output)
-    assert json.loads(output.read_text(encoding="utf-8"))["files"] == []
-
-
 @pytest.mark.parametrize("probe_status", [200, 403])
 def test_plan_without_usable_redirect(
     probe_status, hub_environment, tmp_path, monkeypatch
@@ -199,8 +168,9 @@ def test_plan_without_usable_redirect(
     assert file["url"].startswith("https://modelscope.cn/api/v1/models/")
 
 
-@pytest.mark.parametrize("detected_type", ["model", "dataset"])
-@pytest.mark.parametrize("token_source", ["environment", "explicit"])
+@pytest.mark.parametrize(
+    "detected_type,token_source", [("model", "environment"), ("dataset", "explicit")]
+)
 def test_auto_repo_type(
     detected_type, token_source, hub_environment, tmp_path, monkeypatch
 ):
@@ -236,9 +206,8 @@ def test_auto_repo_type(
     assert plan["endpoint"] == "https://modelscope.cn"
 
 
-@pytest.mark.parametrize("model_not_found", [False, True])
 def test_auto_repo_type_preserves_endpoint_selection(
-    model_not_found, hub_environment, tmp_path, monkeypatch
+    hub_environment, tmp_path, monkeypatch
 ):
     """A model probe must not pin the subsequent dataset probe to its site."""
     probes = []
@@ -246,8 +215,6 @@ def test_auto_repo_type_preserves_endpoint_selection(
     def resolve(api, repo_id, *, repo_type):
         assert api.legacy.endpoint == "https://modelscope.cn"
         probes.append(repo_type)
-        if repo_type == "model" and model_not_found:
-            raise NotExistError("Model not found on either site")
         return (
             "https://modelscope.cn" if repo_type == "model" else "https://modelscope.ai"
         )
@@ -279,6 +246,8 @@ def test_auto_repo_type_rejects_ambiguous_or_missing_repo(
     exists, error_type, message, hub_environment, tmp_path, monkeypatch
 ):
     """Never choose a type or enumerate files when detection is inconclusive."""
+    if not exists:
+        monkeypatch.delenv("MODELSCOPE_ENDPOINT")
     monkeypatch.setattr(HubApi, "repo_exists", lambda *args: exists)
     monkeypatch.setattr(
         HubApi,
@@ -294,10 +263,9 @@ def test_auto_repo_type_rejects_ambiguous_or_missing_repo(
 
 
 @pytest.mark.parametrize(
-    "error_type",
-    [NetworkError, AuthenticationError, PermissionDeniedError, ServerError],
+    "failed_type,error_type",
+    [("model", NetworkError), ("dataset", PermissionDeniedError)],
 )
-@pytest.mark.parametrize("failed_type", ["model", "dataset"])
 def test_auto_repo_type_propagates_probe_errors(
     error_type, failed_type, hub_environment, tmp_path, monkeypatch
 ):

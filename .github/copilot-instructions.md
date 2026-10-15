@@ -30,7 +30,9 @@ pip install -e ".[dev]"
 
 - Follow PEP 8 style guidelines
 - Use type hints where appropriate
-- Write comprehensive tests
+- Test observable project behavior with representative cases
+- Avoid Cartesian parameter combinations unless the dimensions interact
+- Do not test trivial assignments, placeholder methods, or third-party internals
 - Include docstrings for all public functions
 - Use logging for debugging and status messages
 - Use ruff for linting and formatting (replaces black, flake8, isort)
