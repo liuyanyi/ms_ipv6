@@ -40,6 +40,7 @@ def test_generate_plan_with_hub_client(
         {"Path": "weights", "Type": "tree"},
         {"Path": "weights/中文 + shard.bin", "Size": 2048, "Sha256": sha256},
         {"Path": "weights/skip.tmp", "Size": 3},
+        {"Path": "weights/skip.BIN", "Size": 3},
         {"Path": "config.json", "Size": 2},
     ]
 
@@ -85,7 +86,7 @@ def test_generate_plan_with_hub_client(
         repo_id="owner/repo",
         token=token,
         allow_pattern="weights/",
-        ignore_pattern=["*.tmp"],
+        ignore_pattern=["*.tmp", "*.BIN"],
     )
     plan_text = Path(path).read_text(encoding="utf-8")
     plan = json.loads(plan_text)
@@ -96,8 +97,8 @@ def test_generate_plan_with_hub_client(
     assert plan["endpoint"] == "https://modelscope.cn"
     assert plan["file_count"] == 1
     file = plan["files"][0]
-    assert file["path"] == "weights/中文 + shard.bin"
-    assert file["remote_path"] == file["path"]
+    assert file["path"] == str(Path("weights") / "中文 + shard.bin")
+    assert file["remote_path"] == "weights/中文 + shard.bin"
     assert file["sha256"] == sha256
     assert file["size"] == 2048
     assert file["size_human"] == "2.00 KB"
@@ -144,7 +145,7 @@ def test_dataset_pagination(hub_environment, tmp_path, monkeypatch):
     )
     assert pages == [1, 2]
     assert path == str(output)
-    assert json.loads(output.read_text())["files"] == []
+    assert json.loads(output.read_text(encoding="utf-8"))["files"] == []
 
 
 @pytest.mark.parametrize("probe_status", [200, 403])

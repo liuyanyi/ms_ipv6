@@ -876,11 +876,11 @@ class ModelScopeDownloader:
             if not path:
                 continue
             if ignore_patterns and any(
-                fnmatch.fnmatch(path, pat) for pat in ignore_patterns
+                fnmatch.fnmatchcase(path, pat) for pat in ignore_patterns
             ):
                 continue
             if allow_patterns and not any(
-                fnmatch.fnmatch(path, pat) for pat in allow_patterns
+                fnmatch.fnmatchcase(path, pat) for pat in allow_patterns
             ):
                 continue
             filtered_files.append(f)
