@@ -13,16 +13,14 @@
 ## 安装
 
 ```bash
-# 生产环境（不包含 plan 依赖）
+# 生产环境（包含计划生成所需的轻量 ModelScope Hub 客户端）
 pip install .
 
-# 开发环境（不包含 plan 依赖）
+# 开发环境
 pip install -e ".[dev]"
-
-# 如需使用 plan 子命令，请额外安装可选的 plan 依赖：
-pip install -e ".[plan]"          # 仅 plan 依赖
-pip install -e ".[dev,plan]"      # 开发依赖 + plan 依赖
 ```
+
+需要 Python 3.10+。`modelscope-hub` 已并入主依赖，无需安装完整的 `modelscope` 包，也无需选择 `[plan]` extra。现有 `plan → download` 两阶段流程保持不变。
 
 ## 快速开始
 
@@ -71,8 +69,8 @@ ms-ipv6 download my_plan.json --local-dir ./downloads/ --timeout 120
   - 说明：
     - `repo_id` 形如 `user/repo`
     - 默认输出：`{repo_type}__{repo_id}.json`
-    - `--token` 可选，未提供时将从环境变量 `MODELSCOPE_API_TOKEN` 读取（当前版本暂未实际使用）
-  - 注意：未安装可选依赖 `plan` 将无法执行 `plan` 子命令
+    - `--token` 可选，优先使用显式传入的 token，否则使用环境变量 `MODELSCOPE_API_TOKEN` 或 `modelscope-hub` 保存的凭据；公开仓库无需登录
+    - token 用于文件列表查询和下载直链探测，不写入计划文件；需要认证且没有可用直链的文件，后续下载仍受仓库权限限制
 
 - 执行下载：
   - 用法：`ms-ipv6 download <plan.json> --local-dir <DIR> [--workers N] [--overwrite] [--no-skip-existing] [--allow-raw-direct] [--raw-dns DNS] [--timeout SEC] [-v]`
@@ -99,7 +97,7 @@ ms-ipv6 download my_plan.json --local-dir ./downloads/ --timeout 120
 
 ### 设计说明（为何仅下载阶段支持 IPv6）
 
-- 计划生成（plan）阶段依赖 ModelScope 主站 API/SDK，当前不支持 IPv6 直连
+- 计划生成（plan）阶段通过轻量 `modelscope-hub` 客户端访问 ModelScope 主站 API，当前不支持 IPv6 直连
 - 下载（download）阶段由本工具自行发起 HTTP 请求：no-raw 文件走普通下载路径，raw 文件默认走 IPv6 强制下载路径
 
 ## 示例场景
@@ -142,7 +140,7 @@ ms-ipv6 download model__user__model.json --local-dir ./downloads/ --allow-raw-di
 
 ## 开发
 
-环境要求：Python 3.8+（推荐 3.11），支持 IPv4/IPv6。
+环境要求：Python 3.10+（推荐 3.11），支持 IPv4/IPv6。
 
 安装开发依赖：
 

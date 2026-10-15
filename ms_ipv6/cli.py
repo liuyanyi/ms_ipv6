@@ -47,7 +47,7 @@ def create_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument(
         "--token",
         required=False,
-        help="ModelScope API token（可选）。未提供时从环境变量 MODELSCOPE_API_TOKEN 读取",
+        help="ModelScope API token（可选）。默认使用 MODELSCOPE_API_TOKEN 或 Hub 客户端保存的凭据",
     )
     plan_parser.add_argument(
         "--allow-pattern",

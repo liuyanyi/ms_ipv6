@@ -10,12 +10,14 @@ import os
 import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from http.cookiejar import CookieJar
 from threading import Lock
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
+from modelscope_hub import FileInfo, HubApi, HubConfig
 from tqdm import tqdm
 
 from .schema import Plan, PlanFile
@@ -805,7 +807,7 @@ class ModelScopeDownloader:
     def generate_plan(
         self,
         *,
-        repo_type: str,
+        repo_type: Literal["model", "dataset"],
         repo_id: str,
         output: Optional[str] = None,
         token: Optional[str] = None,
@@ -820,80 +822,28 @@ class ModelScopeDownloader:
             repo_id: 仓库ID，如 "user/repo"
             output: 计划文件输出路径（.json）。若未提供，默认输出到
                     repo_type__<repo_id>（将 repo_id 中的 '/' 替换为 '__'）.json。
-            token: 可选的 ModelScope API Token（未提供时将从环境变量 MODELSCOPE_API_TOKEN 读取）。当前参数暂不参与实际逻辑。
+            token: 可选的 ModelScope API Token；默认使用环境变量或 Hub 客户端保存的凭据。
             allow_pattern: 允许下载的通配模式（可多值）
             ignore_pattern: 忽略下载的通配模式（可多值）
 
         Returns:
             计划文件路径（最终写入的位置）
         """
-        # 允许从环境变量读取 token，但当前不使用（为后续私有仓库等能力预留）
-        if token is None:
-            token = os.getenv("MODELSCOPE_API_TOKEN")
-        # 惰性导入，避免在未安装modelscope时出错
-        try:
-            from modelscope.hub.api import HubApi, ModelScopeConfig
-            from modelscope.hub.file_download import get_file_download_url
-            from modelscope.utils.constant import (
-                DEFAULT_DATASET_REVISION,
-                DEFAULT_MODEL_REVISION,
-                REPO_TYPE_DATASET,
-                REPO_TYPE_MODEL,
-            )
-        except Exception as e:  # noqa: BLE001
-            raise RuntimeError("需要已安装的 'modelscope' 包以生成下载计划") from e
-
         if repo_type not in {"model", "dataset"}:
             raise ValueError("repo_type 仅支持 'model' 或 'dataset'")
 
-        ms_repo_type = REPO_TYPE_MODEL if repo_type == "model" else REPO_TYPE_DATASET
-
-        api = HubApi()
-        api.login(access_token=token)
-        endpoint = api.get_endpoint_for_read(repo_id=repo_id, repo_type=ms_repo_type)
-        cookies = ModelScopeConfig.get_cookies()
-
-        # 获取文件列表与修订信息
-        if repo_type == "model":
-            revision_detail = api.get_valid_revision_detail(
-                repo_id,
-                revision=DEFAULT_MODEL_REVISION,
-                cookies=cookies,
-                endpoint=endpoint,
-            )
-            revision = revision_detail["Revision"]
-            headers = {
-                "Snapshot": "True",
-                "user-agent": ModelScopeConfig.get_user_agent(user_agent=None),
-            }
-            repo_files = api.get_model_files(
-                model_id=repo_id,
-                revision=revision,
-                recursive=True,
-                use_cookies=False if cookies is None else cookies,
-                headers=headers,
-                endpoint=endpoint,
-            )
-        else:
-            revision = DEFAULT_DATASET_REVISION
-            # 分页获取dataset文件列表
-            page_number = 1
-            page_size = 150
-            repo_files = []
-            while True:
-                dataset_files = api.get_dataset_files(
-                    repo_id=repo_id,
-                    revision=revision,
-                    root_path="/",
-                    recursive=True,
-                    page_number=page_number,
-                    page_size=page_size,
-                    endpoint=endpoint,
-                )
-                repo_files.extend(dataset_files)
-                if len(dataset_files) < page_size:
-                    break
-                page_number += 1
+        config = HubConfig(token=token)
+        endpoint = HubApi(config=config).resolve_endpoint_for_read(
+            repo_id, repo_type=repo_type
+        )
+        api = HubApi(config=config, endpoint=endpoint)
+        cookies = api.get_cookies()
+        revision = "master"
+        headers = {"Snapshot": "True"} if repo_type == "model" else None
+        # 模型和数据集统一查询；分页与大目录遍历由 Hub 客户端处理。
+        repo_files = api.list_repo_files(
+            repo_id, repo_type, revision=revision, recursive=True
+        )
         logger.info(f"获取到 {len(repo_files)} 个文件条目")
 
         # 归一化模式并过滤
@@ -918,11 +868,11 @@ class ModelScopeDownloader:
         allow_patterns = _normalize_patterns(allow_pattern)
         ignore_patterns = _normalize_patterns(ignore_pattern)
 
-        filtered_files: List[Dict[str, Any]] = []
+        filtered_files: List[FileInfo] = []
         for f in repo_files:
-            if f.get("Type") == "tree":
+            if f.is_dir:
                 continue
-            path = f.get("Path") or f.get("Name")
+            path = f.path
             if not path:
                 continue
             if ignore_patterns and any(
@@ -938,7 +888,10 @@ class ModelScopeDownloader:
 
         # 解析重定向，获得可用的 raw_url（不下载，仅做跳转探测）
         def _resolve_raw_url(
-            u: str, *, headers: Optional[Dict[str, str]] = None, cookies=None
+            u: str,
+            *,
+            headers: Optional[Dict[str, str]] = None,
+            cookies: Optional[CookieJar] = None,
         ) -> Optional[str]:
             try:
                 # 允许重定向，拿最终的 URL；使用 stream 避免下载主体
@@ -950,6 +903,7 @@ class ModelScopeDownloader:
                         headers=headers,
                         cookies=cookies,
                     ) as r:
+                        r.raise_for_status()
                         # 存在重定向历史并且最终 URL 与原始不同，则视为直链
                         if r.history and str(r.url) != u:
                             return str(r.url)
@@ -957,51 +911,27 @@ class ModelScopeDownloader:
                 return None
             return None
 
-        def _extract_sha256(meta: Dict[str, Any]) -> Optional[str]:
-            # 尝试从不同键名中获取sha256
-            for key in ("Sha256", "sha256", "SHA256", "Sha", "sha", "Digest"):
-                v = meta.get(key)
-                if isinstance(v, str) and len(v) >= 40:
-                    return v
-            return None
-
         # 生成计划条目（使用相对路径）
         plan_files: List[PlanFile] = []
         for f in tqdm(filtered_files, desc="生成计划"):
-            remote_path = f["Path"]
-            if repo_type == "model":
-                url = get_file_download_url(
-                    model_id=repo_id,
-                    file_path=remote_path,
-                    revision=revision,
-                    endpoint=endpoint,
-                )
-            else:
-                group_or_owner, name = repo_id.split("/", 1)
-                url = api.get_dataset_file_url(
-                    file_name=remote_path,
-                    dataset_name=name,
-                    namespace=group_or_owner,
-                    revision=revision,
-                    endpoint=endpoint,
-                )
+            remote_path = f.path
+            # HubApi 尚无顶层 URL 构造方法，复用其 legacy 客户端的 URL 编码。
+            url = api.legacy.get_download_url(
+                repo_id, repo_type, remote_path, revision=revision
+            )
             rel_path = os.path.normpath(remote_path)
             # 传入 headers/cookies 以获得与 API 一致的跳转行为
-            raw = _resolve_raw_url(
-                url, headers=headers if repo_type == "model" else None, cookies=cookies
-            )
-            file_size = f.get("Size")
-            file_size_human = (
-                get_file_size_human(file_size) if isinstance(file_size, int) else None
-            )
+            raw = _resolve_raw_url(url, headers=headers, cookies=cookies)
+            file_size = f.size
+            file_size_human = get_file_size_human(file_size)
             entry: PlanFile = {
                 "url": url,
                 "path": rel_path,
                 "remote_path": remote_path,
-                "size": f.get("Size"),
+                "size": file_size,
                 "size_human": file_size_human,
             }
-            sha = _extract_sha256(f)
+            sha = f.sha256
             if sha:
                 entry["sha256"] = sha
             if raw:
@@ -1029,8 +959,8 @@ class ModelScopeDownloader:
         out_dir = os.path.dirname(plan_path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
-        with open(plan_path, "w", encoding="utf-8") as f:
-            json.dump(plan, f, ensure_ascii=False, indent=2)
+        with open(plan_path, "w", encoding="utf-8") as stream:
+            json.dump(plan, stream, ensure_ascii=False, indent=2)
 
         # 这里不再输出 info 日志，避免与 CLI 的 print 重复
         return plan_path
