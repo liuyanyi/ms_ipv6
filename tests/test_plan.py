@@ -7,6 +7,14 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 import requests
+from modelscope_hub import (
+    AuthenticationError,
+    HubApi,
+    NetworkError,
+    NotExistError,
+    PermissionDeniedError,
+    ServerError,
+)
 
 from ms_ipv6.downloader import ModelScopeDownloader
 
@@ -35,6 +43,11 @@ def test_generate_plan_with_hub_client(
         token = expected_token = "explicit-token"
 
     api_calls = []
+    monkeypatch.setattr(
+        HubApi,
+        "repo_exists",
+        lambda *args, **kwargs: pytest.fail("Explicit types must skip auto detection"),
+    )
     sha256 = "a" * 64
     metadata = [
         {"Path": "weights", "Type": "tree"},
@@ -184,3 +197,128 @@ def test_plan_without_usable_redirect(
     assert "raw_url" not in file
     assert "sha256" not in file
     assert file["url"].startswith("https://modelscope.cn/api/v1/models/")
+
+
+@pytest.mark.parametrize("detected_type", ["model", "dataset"])
+@pytest.mark.parametrize("token_source", ["environment", "explicit"])
+def test_auto_repo_type(
+    detected_type, token_source, hub_environment, tmp_path, monkeypatch
+):
+    """Detect a unique visible type and write its actual type and filename."""
+    monkeypatch.setenv("MODELSCOPE_API_TOKEN", "environment-token")
+    token = "explicit-token" if token_source == "explicit" else None
+    expected_token = token or "environment-token"
+    probes = []
+    listings = []
+
+    def repo_exists(api, repo_id, repo_type):
+        assert repo_id == "owner/repo"
+        assert api.legacy.token == expected_token
+        assert api.legacy.endpoint == "https://modelscope.cn"
+        probes.append(repo_type)
+        return repo_type == detected_type
+
+    def list_files(api, repo_id, repo_type, **kwargs):
+        assert api.legacy.token == expected_token
+        listings.append(repo_type)
+        return []
+
+    monkeypatch.setattr(HubApi, "repo_exists", repo_exists)
+    monkeypatch.setattr(HubApi, "list_repo_files", list_files)
+    path = ModelScopeDownloader(cache_dir=str(tmp_path / "cache")).generate_plan(
+        repo_id="owner/repo", token=token
+    )
+    plan = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert probes == ["model", "dataset"]
+    assert listings == [detected_type]
+    assert Path(path).name == f"{detected_type}__owner__repo.json"
+    assert plan["repo_type"] == detected_type
+    assert plan["endpoint"] == "https://modelscope.cn"
+
+
+@pytest.mark.parametrize("model_not_found", [False, True])
+def test_auto_repo_type_preserves_endpoint_selection(
+    model_not_found, hub_environment, tmp_path, monkeypatch
+):
+    """A model probe must not pin the subsequent dataset probe to its site."""
+    probes = []
+
+    def resolve(api, repo_id, *, repo_type):
+        assert api.legacy.endpoint == "https://modelscope.cn"
+        probes.append(repo_type)
+        if repo_type == "model" and model_not_found:
+            raise NotExistError("Model not found on either site")
+        return (
+            "https://modelscope.cn" if repo_type == "model" else "https://modelscope.ai"
+        )
+
+    monkeypatch.setattr(HubApi, "resolve_endpoint_for_read", resolve)
+    monkeypatch.setattr(
+        HubApi, "repo_exists", lambda api, repo_id, repo_type: repo_type == "dataset"
+    )
+
+    def list_files(api, *args, **kwargs):
+        assert api.legacy.endpoint == "https://modelscope.ai"
+        return []
+
+    monkeypatch.setattr(HubApi, "list_repo_files", list_files)
+    path = ModelScopeDownloader(cache_dir=str(tmp_path / "cache")).generate_plan(
+        repo_id="owner/repo", repo_type="auto"
+    )
+    assert probes == ["model", "dataset"]
+    plan = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert plan["repo_type"] == "dataset"
+    assert plan["endpoint"] == "https://modelscope.ai"
+
+
+@pytest.mark.parametrize(
+    "exists,error_type,message",
+    [(True, ValueError, "同时存在"), (False, NotExistError, "未找到可访问")],
+)
+def test_auto_repo_type_rejects_ambiguous_or_missing_repo(
+    exists, error_type, message, hub_environment, tmp_path, monkeypatch
+):
+    """Never choose a type or enumerate files when detection is inconclusive."""
+    monkeypatch.setattr(HubApi, "repo_exists", lambda *args: exists)
+    monkeypatch.setattr(
+        HubApi,
+        "list_repo_files",
+        lambda *args, **kwargs: pytest.fail("Detection failed; do not list files"),
+    )
+    output = tmp_path / "plan.json"
+    with pytest.raises(error_type, match=message):
+        ModelScopeDownloader(cache_dir=str(tmp_path / "cache")).generate_plan(
+            repo_id="owner/repo", output=str(output)
+        )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [NetworkError, AuthenticationError, PermissionDeniedError, ServerError],
+)
+@pytest.mark.parametrize("failed_type", ["model", "dataset"])
+def test_auto_repo_type_propagates_probe_errors(
+    error_type, failed_type, hub_environment, tmp_path, monkeypatch
+):
+    """A failed second probe must not silently select an already-found model."""
+    error = error_type("probe failed")
+
+    def repo_exists(api, repo_id, repo_type):
+        if repo_type == failed_type:
+            raise error
+        return True
+
+    monkeypatch.setattr(HubApi, "repo_exists", repo_exists)
+    monkeypatch.setattr(
+        HubApi,
+        "list_repo_files",
+        lambda *args, **kwargs: pytest.fail("Detection failed; do not list files"),
+    )
+    output = tmp_path / "plan.json"
+    with pytest.raises(error_type) as caught:
+        ModelScopeDownloader(cache_dir=str(tmp_path / "cache")).generate_plan(
+            repo_id="owner/repo", output=str(output)
+        )
+    assert caught.value is error
+    assert not output.exists()

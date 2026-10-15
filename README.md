@@ -7,7 +7,8 @@
 - 两阶段下载：先生成“计划”，再按计划高效下载
 - IPv6 优化：可在下载阶段强制仅走 IPv6
 - 并发与续传：多线程下载、跳过已存在或强制覆盖
-- 灵活过滤：按通配符仅下载需要的文件
+- 自动识别：省略仓库类型时自动区分模型和数据集，支持手动指定
+- 灵活过滤：按区分大小写的通配符仅下载需要的文件
 - 统一日志：进度条与彩色日志和谐共存
 
 ## 安装
@@ -27,10 +28,12 @@ pip install -e ".[dev]"
 1) 生成下载计划（plan）
 
 ```bash
-# 模型
-ms-ipv6 plan model Qwen/Qwen2-7B-Instruct
+# 自动识别模型或数据集
+ms-ipv6 plan Qwen/Qwen2-7B-Instruct
+ms-ipv6 plan AI-MO/NuminaMath-1.5
 
-# 数据集
+# 手动指定类型（保留原有写法）
+ms-ipv6 plan model Qwen/Qwen2-7B-Instruct
 ms-ipv6 plan dataset AI-MO/NuminaMath-1.5
 
 # 可选：指定输出 / 过滤 / token
@@ -65,9 +68,11 @@ ms-ipv6 download my_plan.json --local-dir ./downloads/ --timeout 120
   - `--version` 或子命令 `version` 显示版本
 
 - 生成计划：
-  - 用法：`ms-ipv6 plan [model|dataset] <repo_id> [--output <file>] [--token <TOKEN>] [--allow-pattern PATTERN ...] [--ignore-pattern PATTERN ...] [-v]`
+  - 用法：`ms-ipv6 plan [auto|model|dataset] <repo_id> [--output <file>] [--token <TOKEN>] [--allow-pattern PATTERN ...] [--ignore-pattern PATTERN ...] [-v]`
   - 说明：
     - `repo_id` 形如 `user/repo`
+    - 省略类型时自动查询模型和数据集元数据；只有一种类型可访问时自动选定，同名两种类型均可访问时要求手动指定
+    - 网络、认证或服务错误会直接报错；两种类型都不存在或不可见时，提示检查仓库 ID、站点及 token 权限
     - 默认输出：`{repo_type}__{repo_id}.json`
     - `--token` 可选，优先使用显式传入的 token，否则使用环境变量 `MODELSCOPE_API_TOKEN` 或 `modelscope-hub` 保存的凭据；公开仓库无需登录
     - token 用于文件列表查询和下载直链探测，不写入计划文件；需要认证且没有可用直链的文件，后续下载仍受仓库权限限制
@@ -155,6 +160,8 @@ ruff check . && ruff format .
 mypy ms_ipv6/
 pytest -q
 ```
+
+GitHub Actions 仅在推送 `v*` 标签或手动运行发布工作流时执行 Windows/Linux × Python 3.10/3.12 检查。所有检查通过后才会构建并发布，任何一组失败都会阻止发布。普通 commit 和 PR 不触发 CI。公网 IPv6 连通性测试需在具备 IPv6 出口的本地环境单独运行，发布检查不依赖公网 IPv6。
 
 ## 许可证
 

@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
-from modelscope_hub import FileInfo, HubApi, HubConfig
+from modelscope_hub import FileInfo, HubApi, HubConfig, NotExistError
 from tqdm import tqdm
 
 from .schema import Plan, PlanFile
@@ -807,7 +807,7 @@ class ModelScopeDownloader:
     def generate_plan(
         self,
         *,
-        repo_type: Literal["model", "dataset"],
+        repo_type: Literal["auto", "model", "dataset"] = "auto",
         repo_id: str,
         output: Optional[str] = None,
         token: Optional[str] = None,
@@ -818,7 +818,7 @@ class ModelScopeDownloader:
         生成下载计划文件（不包含本地根目录）。
 
         Args:
-            repo_type: 仓库类型，"model" 或 "dataset"
+            repo_type: 仓库类型，默认 "auto"；也可指定 "model" 或 "dataset"。
             repo_id: 仓库ID，如 "user/repo"
             output: 计划文件输出路径（.json）。若未提供，默认输出到
                     repo_type__<repo_id>（将 repo_id 中的 '/' 替换为 '__'）.json。
@@ -829,13 +829,39 @@ class ModelScopeDownloader:
         Returns:
             计划文件路径（最终写入的位置）
         """
-        if repo_type not in {"model", "dataset"}:
-            raise ValueError("repo_type 仅支持 'model' 或 'dataset'")
+        if repo_type not in {"auto", "model", "dataset"}:
+            raise ValueError("repo_type 仅支持 'auto'、'model' 或 'dataset'")
 
         config = HubConfig(token=token)
-        endpoint = HubApi(config=config).resolve_endpoint_for_read(
-            repo_id, repo_type=repo_type
-        )
+        api = HubApi(config=config)
+        if repo_type == "auto":
+            matches: Dict[Literal["model", "dataset"], str] = {}
+            candidates: List[Literal["model", "dataset"]] = ["model", "dataset"]
+            for candidate in candidates:
+                try:
+                    candidate_endpoint = api.resolve_endpoint_for_read(
+                        repo_id, repo_type=candidate
+                    )
+                except NotExistError:
+                    continue
+                # 显式配置站点时 resolve_endpoint_for_read 不检查仓库是否存在。
+                candidate_api = HubApi(
+                    config=HubConfig(endpoint=candidate_endpoint, token=config.token)
+                )
+                if candidate_api.repo_exists(repo_id, candidate):
+                    matches[candidate] = candidate_endpoint
+            if not matches:
+                raise NotExistError(
+                    f"未找到可访问的模型或数据集仓库: {repo_id}，请检查仓库 ID、站点及 token 权限"
+                )
+            if len(matches) > 1:
+                raise ValueError(
+                    f"仓库 {repo_id} 同时存在 model 和 dataset 类型，请使用 plan model <repo_id> 或 plan dataset <repo_id> 指定类型"
+                )
+            repo_type, endpoint = next(iter(matches.items()))
+            logger.info("自动识别仓库类型: {} ({})", repo_type, repo_id)
+        else:
+            endpoint = api.resolve_endpoint_for_read(repo_id, repo_type=repo_type)
         api = HubApi(config=config, endpoint=endpoint)
         cookies = api.get_cookies()
         revision = "master"

@@ -6,6 +6,7 @@ Command Line Interface for ModelScope IPV6 Download Assistant
 import argparse
 
 from loguru import logger
+from modelscope_hub import HubError
 
 from . import __version__
 from .downloader import ModelScopeDownloader
@@ -32,11 +33,12 @@ def create_parser() -> argparse.ArgumentParser:
     plan_parser = subparsers.add_parser(
         "plan", parents=[common], help="生成下载计划 _msv6.json"
     )
-    # 严格新规则：显式类型 + 仓库ID
     plan_parser.add_argument(
         "repo_type",
-        choices=["model", "dataset"],
-        help="仓库类型: model 或 dataset",
+        nargs="?",
+        default="auto",
+        choices=["auto", "model", "dataset"],
+        help="仓库类型，省略时自动识别；可指定 model 或 dataset",
     )
     plan_parser.add_argument("repo_id", help="仓库ID，例如: user/repo")
     plan_parser.add_argument(
@@ -125,16 +127,18 @@ def main() -> None:
     downloader = ModelScopeDownloader(use_ipv4=(args.command == "download"))
 
     if args.command == "plan":
-        repo_type = args.repo_type
-        repo_id = args.repo_id
-        plan_path = downloader.generate_plan(
-            repo_type=repo_type,
-            repo_id=repo_id,
-            output=args.output,
-            token=getattr(args, "token", None),
-            allow_pattern=args.allow_pattern,
-            ignore_pattern=args.ignore_pattern,
-        )
+        try:
+            plan_path = downloader.generate_plan(
+                repo_type=args.repo_type,
+                repo_id=args.repo_id,
+                output=args.output,
+                token=getattr(args, "token", None),
+                allow_pattern=args.allow_pattern,
+                ignore_pattern=args.ignore_pattern,
+            )
+        except (HubError, ValueError) as e:
+            logger.error("计划生成失败: {}", e)
+            raise SystemExit(1) from None
         logger.info(f"下载计划已生成: {plan_path}")
     elif args.command == "download":
         try:
